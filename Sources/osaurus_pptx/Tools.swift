@@ -792,7 +792,17 @@ struct SavePresentationTool {
   struct Args: Decodable {
     let presentation_id: String
     let path: String
+    let overwrite: Bool?
+    let dryRun: Bool?
     let _context: FolderContext?
+
+    enum CodingKeys: String, CodingKey {
+      case presentation_id
+      case path
+      case overwrite
+      case dryRun = "dry_run"
+      case _context
+    }
   }
 
   func run(args: String, presentations: inout [String: Presentation]) -> String {
@@ -815,6 +825,22 @@ struct SavePresentationTool {
 
     // Ensure path ends with .pptx
     let finalPath = absolutePath.hasSuffix(".pptx") ? absolutePath : "\(absolutePath).pptx"
+    let exists = FileManager.default.fileExists(atPath: finalPath)
+
+    if input.dryRun == true {
+      return jsonSuccess([
+        "path": finalPath,
+        "slide_count": pres.slides.count,
+        "presentation_id": pres.id,
+        "file_exists": exists,
+        "would_overwrite": exists,
+        "dry_run": true,
+      ])
+    }
+
+    if exists && input.overwrite != true {
+      return jsonError("File already exists: \(finalPath). Pass overwrite=true to replace it.")
+    }
 
     do {
       try PPTXWriter.write(presentation: pres, to: finalPath)

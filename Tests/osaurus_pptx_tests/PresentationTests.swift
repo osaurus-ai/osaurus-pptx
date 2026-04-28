@@ -249,6 +249,10 @@ struct ToolExecutionTests {
     return obj
   }
 
+  private func tempPath() -> String {
+    NSTemporaryDirectory() + "osaurus_tool_test_\(UUID().uuidString).pptx"
+  }
+
   @Test("create_presentation returns valid JSON with presentation_id")
   func createPresentation() {
     var presentations: [String: Presentation] = [:]
@@ -497,6 +501,58 @@ struct ToolExecutionTests {
     #expect(detailJSON?["slide_count"] as? Int == 1)
     // The detailed response includes slides array with element info
     #expect(detailJSON?["slides"] != nil)
+  }
+
+  @Test("save_presentation dry run does not write a file")
+  func savePresentationDryRun() {
+    var presentations: [String: Presentation] = [:]
+    let (presId, _) = createPresentationWithSlide(&presentations)
+    let path = tempPath()
+    defer { try? FileManager.default.removeItem(atPath: path) }
+
+    let tool = SavePresentationTool()
+    let result = tool.run(
+      args: """
+        {"presentation_id": "\(presId)", "path": "\(jsonEscape(path))", "dry_run": true}
+        """,
+      presentations: &presentations)
+    let json = parseJSON(result)
+
+    #expect(json?["error"] == nil)
+    #expect(json?["dry_run"] as? Bool == true)
+    #expect(json?["file_exists"] as? Bool == false)
+    #expect(FileManager.default.fileExists(atPath: path) == false)
+  }
+
+  @Test("save_presentation refuses existing file unless overwrite is true")
+  func savePresentationOverwriteGate() {
+    var presentations: [String: Presentation] = [:]
+    let (presId, _) = createPresentationWithSlide(&presentations)
+    let path = tempPath()
+    defer { try? FileManager.default.removeItem(atPath: path) }
+
+    let tool = SavePresentationTool()
+    let first = tool.run(
+      args: """
+        {"presentation_id": "\(presId)", "path": "\(jsonEscape(path))"}
+        """,
+      presentations: &presentations)
+    #expect(parseJSON(first)?["error"] == nil)
+    #expect(FileManager.default.fileExists(atPath: path))
+
+    let blocked = tool.run(
+      args: """
+        {"presentation_id": "\(presId)", "path": "\(jsonEscape(path))"}
+        """,
+      presentations: &presentations)
+    #expect((parseJSON(blocked)?["error"] as? String)?.contains("already exists") == true)
+
+    let overwritten = tool.run(
+      args: """
+        {"presentation_id": "\(presId)", "path": "\(jsonEscape(path))", "overwrite": true}
+        """,
+      presentations: &presentations)
+    #expect(parseJSON(overwritten)?["error"] == nil)
   }
 
   @Test("Full workflow: create → add_slide → add_text → add_shape → get_info")
