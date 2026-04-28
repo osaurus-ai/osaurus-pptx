@@ -306,7 +306,9 @@ nonisolated(unsafe) private var api: osr_plugin_api = {
                 "type": "object",
                 "properties": {
                   "presentation_id": {"type": "string", "description": "Presentation ID"},
-                  "path": {"type": "string", "description": "Output file path (relative to workspace or absolute). .pptx extension added if missing."}
+                  "path": {"type": "string", "description": "Output file path (relative to workspace or absolute). .pptx extension added if missing."},
+                  "overwrite": {"type": "boolean", "description": "Replace an existing file at the output path (default: false)."},
+                  "dry_run": {"type": "boolean", "description": "Validate the output path and report whether a save would overwrite an existing file without writing."}
                 },
                 "required": ["presentation_id", "path"]
               },
