@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 
@@ -807,5 +808,246 @@ struct PPTXRoundTripTests {
     let allTexts = textElements.map { $0.text }
     #expect(allTexts.contains("Title Here"))
     #expect(allTexts.contains("Box Text"))
+  }
+}
+
+// MARK: - High-Fidelity Package Tools
+
+@Suite("High-Fidelity Package Tools")
+struct HighFidelityPackageToolTests {
+
+  private func parseJSON(_ json: String) -> [String: Any]? {
+    guard let data = json.data(using: .utf8),
+      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+      return nil
+    }
+    return obj
+  }
+
+  private func tempDir() throws -> String {
+    let path = NSTemporaryDirectory() + "osaurus_pptx_hifi_\(UUID().uuidString)"
+    try FileManager.default.createDirectory(
+      atPath: path,
+      withIntermediateDirectories: true,
+      attributes: nil)
+    return path
+  }
+
+  private func writeFixtureDeck(to path: String, slideCount: Int = 1) throws {
+    let pres = Presentation(title: "Fixture")
+    for index in 1...slideCount {
+      let slide = Slide()
+      let text = TextElement(
+        text: "Slide \(index) Original",
+        position: ElementPosition(x: 1, y: 1, width: 6, height: 1),
+        fontSize: 24,
+        bold: true)
+      slide.elements.append(text)
+      pres.slides.append(slide)
+    }
+    try PPTXWriter.write(presentation: pres, to: path)
+  }
+
+  private func writeFixtureImage(to path: String, color: NSColor, type: NSBitmapImageRep.FileType)
+    throws
+  {
+    let image = NSImage(size: NSSize(width: 32, height: 32))
+    image.lockFocus()
+    color.setFill()
+    NSRect(x: 0, y: 0, width: 32, height: 32).fill()
+    image.unlockFocus()
+    guard let tiff = image.tiffRepresentation,
+      let bitmap = NSBitmapImageRep(data: tiff),
+      let data = bitmap.representation(using: type, properties: [:])
+    else {
+      Issue.record("Failed to create fixture image")
+      return
+    }
+    try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+  }
+
+  private func writeDeckWithImage(to path: String, imagePath: String) throws {
+    let pres = Presentation(title: "Image Fixture")
+    let slide = Slide()
+    slide.elements.append(
+      ImageElement(
+        sourcePath: imagePath,
+        position: ElementPosition(x: 1, y: 1, width: 2, height: 2),
+        imageExtension: (imagePath as NSString).pathExtension.lowercased()))
+    pres.slides.append(slide)
+    try PPTXWriter.write(presentation: pres, to: path)
+  }
+
+  @Test("Attachment context resolves preserved host paths outside working directory")
+  func attachmentContextResolution() throws {
+    let dir = try tempDir()
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+
+    let hostPath = "\(dir)/attached.pptx"
+    try writeFixtureDeck(to: hostPath)
+
+    let contextJSON = """
+      {
+        "working_directory": "\(jsonEscape(dir))/workspace",
+        "attachments": [
+          {
+            "id": "att-1",
+            "filename": "attached.pptx",
+            "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "file_size": 128,
+            "host_path": "\(jsonEscape(hostPath))"
+          }
+        ]
+      }
+      """
+    let context = try JSONDecoder().decode(FolderContext.self, from: Data(contextJSON.utf8))
+    let result = resolveInputPath(
+      path: nil,
+      attachmentId: "att-1",
+      context: context,
+      allowedExtensions: ["pptx"])
+
+    if case .success(let resolved) = result {
+      #expect(resolved == hostPath)
+    } else {
+      Issue.record("Expected attachment host path resolution")
+    }
+  }
+
+  @Test("Path validation rejects sibling prefix traversal")
+  func siblingPrefixTraversalBlocked() {
+    let result = validatePath("/Users/test/project2/file.pptx", workingDirectory: "/Users/test/project")
+    if case .failure(let message) = result {
+      #expect(message.contains("outside"))
+    } else {
+      Issue.record("Expected sibling prefix to be blocked")
+    }
+  }
+
+  @Test("Archive helper blocks unsafe zip entries")
+  func archiveEntryValidation() {
+    #expect(ArchiveHelper.isSafeZipEntry("ppt/slides/slide1.xml"))
+    #expect(!ArchiveHelper.isSafeZipEntry("../evil.xml"))
+    #expect(!ArchiveHelper.isSafeZipEntry("ppt/../evil.xml"))
+    #expect(!ArchiveHelper.isSafeZipEntry("/tmp/evil.xml"))
+    #expect(!ArchiveHelper.isSafeZipEntry("ppt\\evil.xml"))
+  }
+
+  @Test("validate_presentation returns structural slide details")
+  func validatePresentationTool() throws {
+    let dir = try tempDir()
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+
+    let path = "\(dir)/fixture.pptx"
+    try writeFixtureDeck(to: path)
+
+    let tool = ValidatePresentationTool()
+    let result = tool.run(args: "{\"path\": \"\(jsonEscape(path))\"}")
+    let json = parseJSON(result)
+
+    #expect(json?["valid"] as? Bool == true)
+    #expect(json?["slide_count"] as? Int == 1)
+    #expect(json?["slides"] != nil)
+  }
+
+  @Test("update_text patches an existing PPTX package")
+  func updateTextPackagePatch() throws {
+    let dir = try tempDir()
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+
+    let input = "\(dir)/input.pptx"
+    let output = "\(dir)/output.pptx"
+    try writeFixtureDeck(to: input)
+
+    let report = try PPTXPackage.updateText(
+      inputPath: input,
+      outputPath: output,
+      slideNumber: 1,
+      elementId: nil,
+      matchText: "Original",
+      replacementText: "Updated")
+
+    #expect(report.changedCount == 1)
+    let readBack = try PPTXReader.read(from: output)
+    let texts = readBack.slides.flatMap { $0.elements }.compactMap { ($0 as? TextElement)?.text }
+    #expect(texts.contains("Slide 1 Updated"))
+  }
+
+  @Test("duplicate_slide and reorder_slides preserve package validity")
+  func duplicateAndReorderSlides() throws {
+    let dir = try tempDir()
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+
+    let input = "\(dir)/input.pptx"
+    let duplicated = "\(dir)/duplicated.pptx"
+    let reordered = "\(dir)/reordered.pptx"
+    try writeFixtureDeck(to: input, slideCount: 2)
+
+    let duplicateReport = try PPTXPackage.duplicateSlide(
+      inputPath: input,
+      outputPath: duplicated,
+      slideNumber: 1)
+    #expect(duplicateReport.changedCount == 1)
+    #expect(try PPTXReader.read(from: duplicated).slides.count == 3)
+
+    let reorderReport = try PPTXPackage.reorderSlides(
+      inputPath: duplicated,
+      outputPath: reordered,
+      slideOrder: [3, 1, 2])
+    #expect(reorderReport.changedCount == 3)
+    #expect(try PPTXReader.read(from: reordered).slides.count == 3)
+  }
+
+  @Test("replace_image updates relationship target and content types for changed extension")
+  func replaceImageChangedExtension() throws {
+    let dir = try tempDir()
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+
+    let originalImage = "\(dir)/original.png"
+    let replacementImage = "\(dir)/replacement.jpg"
+    let input = "\(dir)/input.pptx"
+    let output = "\(dir)/output.pptx"
+    let unpacked = "\(dir)/unpacked"
+    try writeFixtureImage(to: originalImage, color: .red, type: .png)
+    try writeFixtureImage(to: replacementImage, color: .blue, type: .jpeg)
+    try writeDeckWithImage(to: input, imagePath: originalImage)
+
+    let report = try PPTXPackage.replaceImage(
+      inputPath: input,
+      outputPath: output,
+      slideNumber: 1,
+      elementId: "slide1-pic1",
+      imagePath: replacementImage)
+
+    #expect(report.changedCount == 1)
+    try ArchiveHelper.extractZipSafely(output, to: unpacked)
+    let rels = try String(
+      contentsOfFile: "\(unpacked)/ppt/slides/_rels/slide1.xml.rels",
+      encoding: .utf8)
+    let contentTypes = try String(contentsOfFile: "\(unpacked)/[Content_Types].xml", encoding: .utf8)
+    #expect(rels.contains("../media/image1.jpg"))
+    #expect(contentTypes.contains("Extension=\"jpg\""))
+    #expect(FileManager.default.fileExists(atPath: "\(unpacked)/ppt/media/image1.jpg"))
+  }
+
+  @Test("set_speaker_notes creates notes package parts")
+  func setSpeakerNotesCreatesPackageParts() throws {
+    let dir = try tempDir()
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+
+    let input = "\(dir)/input.pptx"
+    let output = "\(dir)/notes.pptx"
+    try writeFixtureDeck(to: input)
+
+    let report = try PPTXPackage.setSpeakerNotes(
+      inputPath: input,
+      outputPath: output,
+      slideNumber: 1,
+      notes: "Remember to explain the trend.")
+
+    #expect(report.changedCount == 1)
+    let inspection = try PPTXPackage.inspect(filePath: output)
+    #expect(inspection.slidesJSON.contains("\"notes_present\": true"))
   }
 }

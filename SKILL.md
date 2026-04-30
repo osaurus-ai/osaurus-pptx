@@ -1,233 +1,126 @@
 ---
 name: osaurus-pptx
-description: Create PowerPoint (.pptx) presentations from scratch using the Osaurus PPTX plugin. Use when the user asks to build, generate, or create a PowerPoint presentation, slide deck, or .pptx file.
+description: Create, inspect, patch, render, validate, and export PowerPoint presentations using the Osaurus PPTX plugin. Use for .pptx editing, .ppt/.pptx conversion, presentation previews, and high-fidelity deck workflows.
 metadata:
   author: osaurus
-  version: "0.1.0"
+  version: "0.2.0"
 ---
 
 # Osaurus PPTX
 
-Create PowerPoint (.pptx) presentations from scratch. This plugin is creation-only — treat every presentation as a fresh build.
+Use this plugin for PowerPoint work that needs file fidelity. New decks can be built with the writer tools. Existing decks should be edited with the package patch tools so masters, layouts, images, charts, media, and unrelated OOXML parts remain in place.
 
-## Workflow
+## Mandatory Workflow
 
-Always follow this sequence:
+For any existing file:
 
-1. **Plan first.** Decide the slide count, layout for each slide, and content before calling any tools. Elements cannot be modified after creation, so get it right on the first pass.
-2. **`create_presentation`** — returns a `presentation_id`, slide dimensions, and theme info.
-3. **`add_slide`** — add one slide at a time. Each returns a `slide_number`. Populate the slide with elements immediately before adding the next slide.
-4. **Add elements** — use `add_text`, `add_image`, `add_shape`, `add_table`, `add_chart`, or `set_slide_background` to populate the current slide.
-5. **`save_presentation`** — write the final `.pptx` file. Nothing is written to disk until this step.
+1. Inspect the attachment with `read_presentation` or `validate_presentation`.
+2. Patch with the narrowest tool: `update_text`, `replace_image`, `move_resize_element`, `duplicate_slide`, or `reorder_slides`.
+3. Render with `render_presentation` or export with `export_presentation`.
+4. Validate the changed `.pptx` with `validate_presentation`.
+5. Share both the `.pptx` and a PDF preview when the converter is available.
 
-Never skip steps. Never add elements before creating a slide. Always save at the end.
+If LibreOffice is not installed, `render_presentation` and converter-backed exports return `converter_unavailable`. Report that status plainly instead of pretending a visual preview was checked.
+
+## Attachments
+
+Osaurus passes preserved input files in `_context.attachments`:
+
+```json
+{
+  "id": "attachment-id",
+  "filename": "deck.pptx",
+  "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "file_size": 12345,
+  "host_path": "/Users/.../.osaurus/attachments/.../deck.pptx"
+}
+```
+
+Prefer `attachment_id` over copying `host_path` into prompts. The plugin allows attachment files outside the workspace only when they are present in `_context.attachments`.
+
+## File Policy
+
+- `.pptx` is the editable canonical format.
+- `.ppt`, `.pot`, and binary legacy PowerPoint files are convert-only. Use `export_presentation(format: "pptx")` when LibreOffice is available, then inspect the converted `.pptx`.
+- `read_presentation` accepts `.pptx`, `.ppsx`, and `.potx`, not `.ppt`.
+- `export_presentation(format: "pdf")` uses LibreOffice's `impress_pdf_Export`.
+- `export_presentation(format: "pptx")` copies `.pptx` directly or uses LibreOffice for legacy input.
 
 ## Coordinate System
 
-All positions and sizes are in **inches**, measured from the top-left corner of the slide.
+All element patch coordinates are in inches from the top-left of the slide. Use `read_presentation` or `validate_presentation` to get `width_inches` and `height_inches` before setting coordinates.
+
+Common dimensions:
 
 | Aspect ratio | Width | Height |
 |--------------|-------|--------|
-| 16:9 (default) | 13.33" | 7.5" |
+| 16:9 | 13.33" | 7.5" |
 | 4:3 | 10.0" | 7.5" |
 
-The `create_presentation` response includes `width_inches` and `height_inches` — always use these for positioning calculations rather than hardcoded values.
+Keep normal content at least 0.5" from each edge unless the user asks for full bleed.
 
-**Safe margins:** Leave at least **0.5"** on all edges. Usable area for 16:9 is x: 0.5"–12.83", y: 0.5"–7.0".
-
-## Layout Recipes
-
-Reference coordinates for common 16:9 slide layouts. Adjust proportionally for other aspect ratios.
-
-### Title Slide
-
-```
-Title:    x=1.0  y=2.0  w=11.33 h=1.5  font_size=40 bold=true  alignment=center
-Subtitle: x=1.0  y=4.0  w=11.33 h=1.0  font_size=24            alignment=center
-```
-
-### Section Header
-
-```
-Heading:  x=1.0  y=2.5  w=11.33 h=1.5  font_size=36 bold=true  alignment=center
-```
-
-### Title + Body
-
-```
-Title:    x=0.75 y=0.5  w=11.83 h=1.0  font_size=32 bold=true
-Body:     x=0.75 y=1.75 w=11.83 h=5.0  font_size=18 bullets=true
-```
-
-### Title + Two Columns
-
-```
-Title:    x=0.75 y=0.5  w=11.83 h=1.0  font_size=32 bold=true
-Left:     x=0.75 y=1.75 w=5.67  h=5.0  font_size=16
-Right:    x=6.67 y=1.75 w=5.67  h=5.0  font_size=16
-```
-
-### Title + Image
-
-```
-Title:    x=0.75 y=0.5  w=11.83 h=1.0  font_size=32 bold=true
-Image:    x=2.5  y=1.75 w=8.33  h=5.0
-```
-
-### Title + Image Left + Text Right
-
-```
-Title:    x=0.75 y=0.5  w=11.83 h=1.0  font_size=32 bold=true
-Image:    x=0.75 y=1.75 w=5.67  h=5.0
-Text:     x=6.67 y=1.75 w=5.67  h=5.0  font_size=16
-```
-
-### Title + Table or Chart
-
-```
-Title:    x=0.75 y=0.5  w=11.83 h=1.0  font_size=32 bold=true
-Table:    x=0.75 y=1.75 w=11.83 h=5.0
-Chart:    x=1.5  y=1.75 w=10.33 h=5.0
-```
-
-### Full-Bleed Image (no title)
-
-```
-Image:    x=0.0  y=0.0  w=13.33 h=7.5
-```
-
-## Themes
-
-Choose a theme at creation time with the `theme` parameter. Let the theme handle styling — avoid hardcoding colors.
-
-| Theme | Style | Best for |
-|-------|-------|----------|
-| `modern` (default) | Blue/orange, Calibri | General purpose |
-| `corporate` | Navy/steel blue, Georgia headings | Business, formal |
-| `creative` | Pink/purple, Avenir Next | Marketing, design |
-| `minimal` | Grayscale, Helvetica Neue | Clean, text-heavy |
-| `dark` | Purple/teal on dark bg, SF Pro | Technical, modern |
-
-**Dark theme warning:** Background color is `121212`. Avoid dark text colors. Set slide backgrounds explicitly if needed.
-
-**Choosing a theme:** Default to `modern` unless the user specifies a preference or the content suggests otherwise (e.g., quarterly business reviews suit `corporate`; pitch decks suit `creative`; developer talks suit `dark`).
-
-## Design Best Practices
-
-Follow these guidelines to produce professional-looking slides:
-
-- **Keep slides focused.** One idea per slide. Aim for 5–7 bullet points max per slide.
-- **Use short text.** Bullet points should be phrases, not sentences. Keep titles under 8 words.
-- **Vary layouts.** Alternate between text-heavy, visual, and data slides to maintain visual interest.
-- **Use font hierarchy.** Titles: 32–40pt bold. Body: 16–18pt. Captions: 12–14pt.
-- **Use charts over tables** when showing trends, comparisons, or proportions. Reserve tables for precise reference data.
-- **End with a closing slide.** Use a section header layout with "Thank You", "Questions?", or a call to action.
-
-## Tool Reference
-
-### `create_presentation`
-
-- `size` controls aspect ratio, not layout. Default is `"16:9"`. Also accepts `"4:3"` or custom `"WxH"` (e.g., `"10x7.5"`).
-- `theme` selects a built-in theme. See the Themes section above.
-
-### `add_slide`
-
-- `layout` is **metadata only**. It does not auto-generate content. Every slide starts blank. You must add all elements manually.
-
-### `add_text`
-
-- Use `\n` for line breaks and multi-paragraph text.
-- Set `bullets=true` for bullet-pointed lists.
-- Hex colors must omit the `#` prefix: use `"FF0000"`, not `"#FF0000"`.
-- For centered titles, set `alignment: "center"` and `bold: true`.
-
-### `add_image`
-
-- Paths can be relative to the workspace or absolute.
-- Supported formats: PNG, JPG, GIF, SVG, BMP, TIFF.
-- Requires user permission (`ask` policy).
-
-### `add_shape`
-
-- Available types: `rect`, `round_rect`, `ellipse`, `triangle`, `diamond`, `pentagon`, `hexagon`, `octagon`, `star4`, `star5`, `star6`, `right_arrow`, `left_arrow`, `up_arrow`, `down_arrow`, `heart`, `cloud`, `lightning`, `line`, `parallelogram`, `trapezoid`.
-- Shapes can contain text via the `text` parameter — useful for labeled diagrams and flowcharts.
-
-### `add_table`
-
-- `rows` is a 2D array of strings. The first row is the header by default (`has_header: true`).
-- Column widths auto-distribute evenly. Use `column_widths` for custom sizing (array length must match column count).
-
-### `add_chart`
-
-- Types: `bar`, `column`, `line`, `pie`, `doughnut`.
-- Each series needs a `name` and `values` array. Optionally set a `color` per series.
-- `categories` are the x-axis labels.
-
-### `set_slide_background`
-
-- Sets a solid color background for a slide. Useful with the `dark` theme or for accent slides.
-
-### `delete_slide`
-
-- Removes a slide by `slide_number`. Use this to correct mistakes — delete the slide, re-add it, and rebuild its elements.
-
-### `get_presentation_info`
-
-- Returns slide count and metadata. Pass `include_details: true` to see all elements on all slides. Use this to verify the presentation before saving.
+## Existing Deck Tools
 
 ### `read_presentation`
 
-- Reads an existing `.pptx` file. Only preserves text elements and slide backgrounds. Images, shapes, tables, and charts are not parsed. Use primarily for inspecting text content.
+Reads a `.pptx`, `.ppsx`, or `.potx` into memory and returns stable slide and element IDs. Text IDs look like `slide1-sp2`; image IDs look like `slide1-pic1`.
 
-### `save_presentation`
+The in-memory model is intentionally partial. Use its IDs for targeted package patching; do not assume all deck features are represented as model elements.
 
-- Always call this when done. Nothing is persisted until you save.
-- The `.pptx` extension is added automatically if missing.
-- Requires user permission (`ask` policy).
+### `validate_presentation`
 
-## Limitations and Corrections
+Checks a PPTX-style package, blocks unsafe ZIP entries, confirms core parts, returns slide count, dimensions, and structural slide details.
 
-**Elements cannot be modified after creation.** There are no tools to update text, reposition elements, or change properties on existing elements. Plan each slide fully before adding elements.
+### `update_text`
 
-**Slides cannot be reordered.** Slides are ordered by insertion. Plan the sequence in advance. If order matters and it's wrong, rebuild the presentation.
+Patches text in the original OOXML package and writes a new `.pptx`.
 
-**To fix a slide:** Call `delete_slide` to remove it, `add_slide` to re-add at the same position, rebuild all its elements, then `save_presentation`.
+Use either:
 
-**To inspect what was built:** Call `get_presentation_info` with `include_details: true` to review all slides and elements before saving.
+- `element_id` from `read_presentation`
+- `match_text` for a targeted replacement
 
-## Example
+Always provide `output_path`; this tool does not overwrite the source file.
 
-Build a 3-slide corporate presentation:
+### `replace_image`
 
-```
-1. create_presentation(title="Q4 Report", theme="corporate")
-   → presentation_id, width=13.33, height=7.5
+Replaces an existing image part. If the replacement file extension differs from the original, the tool updates the slide relationship target and adds the needed content type default.
 
-2. add_slide(presentation_id, layout="title")
-   → slide 1
-3. add_text(presentation_id, slide_number=1, text="Q4 2025 Report",
-     x=1.0, y=2.0, width=11.33, height=1.5,
-     font_size=40, bold=true, alignment="center")
-4. add_text(presentation_id, slide_number=1, text="Annual Review",
-     x=1.0, y=4.0, width=11.33, height=1.0,
-     font_size=24, alignment="center")
+### `move_resize_element`
 
-5. add_slide(presentation_id, layout="title_content")
-   → slide 2
-6. add_text(presentation_id, slide_number=2, text="Key Metrics",
-     x=0.75, y=0.5, width=11.83, height=1.0,
-     font_size=32, bold=true)
-7. add_chart(presentation_id, slide_number=2, chart_type="column",
-     categories=["Oct", "Nov", "Dec"],
-     series=[{name: "Revenue", values: [120, 135, 150]}],
-     title="Monthly Revenue",
-     x=1.5, y=1.75, width=10.33, height=5.0)
+Updates the transform for an existing text or image element. Coordinates are inches.
 
-8. add_slide(presentation_id, layout="blank")
-   → slide 3
-9. add_text(presentation_id, slide_number=3, text="Thank You",
-     x=1.0, y=2.5, width=11.33, height=1.5,
-     font_size=36, bold=true, alignment="center")
+### `duplicate_slide`
 
-10. save_presentation(presentation_id, path="Q4_Report.pptx")
-```
+Duplicates a slide and appends it to the deck. Use `reorder_slides` afterward if the duplicate belongs elsewhere.
+
+### `reorder_slides`
+
+Reorders slides with a 1-based complete permutation, for example `[3, 1, 2]`.
+
+### `set_speaker_notes`
+
+Patches speaker notes for one slide and writes a new `.pptx`. This creates notesSlide/notesMaster package parts when needed. Always run `validate_presentation` afterward.
+
+## Creation Tools
+
+For brand-new decks, use:
+
+1. `create_presentation`
+2. `add_slide`
+3. `add_text`, `add_image`, `add_shape`, `add_table`, `add_chart`, and `set_slide_background`
+4. `save_presentation`
+5. `render_presentation`
+6. `validate_presentation`
+
+Creation tools write a clean generated PPTX package. They are not the right path for preserving an existing complex deck.
+
+## Render Before Complete
+
+A high-fidelity task is incomplete until it has:
+
+- a changed `.pptx` or exported file,
+- a validation report,
+- and a PDF preview or an explicit `converter_unavailable` result.
+
+Never mark a visual deck change complete based only on XML/package success.

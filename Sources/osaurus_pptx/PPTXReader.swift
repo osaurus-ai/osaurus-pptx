@@ -13,11 +13,7 @@ enum PPTXReader {
 
     try createDirectoryIfNeeded(tempDir)
 
-    // Unzip
-    let result = try runProcess("/usr/bin/unzip", arguments: ["-q", "-o", filePath, "-d", tempDir])
-    if result.exitCode != 0 {
-      throw PPTXError.unzipFailed(result.output)
-    }
+    try ArchiveHelper.extractZipSafely(filePath, to: tempDir)
 
     // Parse presentation.xml to get slide list
     let presPath = "\(tempDir)/ppt/presentation.xml"
@@ -59,6 +55,10 @@ enum PPTXReader {
     presentation.slideWidth = slideWidth
     presentation.slideHeight = slideHeight
     presentation.sourcePath = filePath
+    presentation.fidelityWarnings = [
+      "Existing-deck read mode exposes stable IDs for targeted tools, but the in-memory writer is simplified. Use update_text, replace_image, move_resize_element, duplicate_slide, reorder_slides, or export_presentation with an output_path to patch the original package where possible.",
+      "Charts, tables, masters, layouts, animations, embedded media, and custom effects are preserved by package patch tools but are not fully represented in the in-memory model.",
+    ]
 
     // Parse presentation.xml.rels to map rIds to slide files
     let presRelsPath = "\(tempDir)/ppt/_rels/presentation.xml.rels"
@@ -99,13 +99,13 @@ enum PPTXReader {
     let slideOrder = orderedSlideRIds.isEmpty ? slideRIdMap.map { $0.rId } : orderedSlideRIds
 
     // Parse each slide
-    for rId in slideOrder {
+    for (slideIndex, rId) in slideOrder.enumerated() {
       guard let slideInfo = slideRIdMap.first(where: { $0.rId == rId }) else { continue }
       let slidePath = "\(tempDir)/ppt/\(slideInfo.target)"
 
       guard FileManager.default.fileExists(atPath: slidePath) else { continue }
 
-      let slide = try parseSlide(at: slidePath, tempDir: tempDir)
+      let slide = try parseSlide(at: slidePath, tempDir: tempDir, slideNumber: slideIndex + 1)
       presentation.slides.append(slide)
     }
 
@@ -114,18 +114,33 @@ enum PPTXReader {
 
   // MARK: - Slide Parsing
 
-  private static func parseSlide(at path: String, tempDir: String) throws -> Slide {
+  private static func parseSlide(at path: String, tempDir: String, slideNumber: Int) throws -> Slide {
     let data = try Data(contentsOf: URL(fileURLWithPath: path))
     let doc = try XMLDocument(data: data, options: [])
 
-    let slide = Slide()
+    let slide = Slide(id: "slide\(slideNumber)")
+    let relationships = loadSlideRelationships(forSlidePath: path, tempDir: tempDir)
 
     // Parse text boxes (sp elements with txBody)
     if let spNodes = try? doc.nodes(forXPath: "//*[local-name()='sp']") {
-      for node in spNodes {
+      for (index, node) in spNodes.enumerated() {
         guard let el = node as? XMLElement else { continue }
-        if let textEl = parseTextElement(el) {
+        if let textEl = parseTextElement(el, elementId: "slide\(slideNumber)-sp\(index + 1)") {
           slide.elements.append(textEl)
+        }
+      }
+    }
+
+    if let picNodes = try? doc.nodes(forXPath: "//*[local-name()='pic']") {
+      for (index, node) in picNodes.enumerated() {
+        guard let el = node as? XMLElement else { continue }
+        if let imageEl = parseImageElement(
+          el,
+          elementId: "slide\(slideNumber)-pic\(index + 1)",
+          relationships: relationships,
+          slidePath: path)
+        {
+          slide.elements.append(imageEl)
         }
       }
     }
@@ -142,7 +157,7 @@ enum PPTXReader {
 
   // MARK: - Text Element Parsing
 
-  private static func parseTextElement(_ sp: XMLElement) -> TextElement? {
+  private static func parseTextElement(_ sp: XMLElement, elementId: String) -> TextElement? {
     // Get position
     guard let xfrmNodes = try? sp.nodes(forXPath: ".//*[local-name()='xfrm']"),
       let xfrm = xfrmNodes.first as? XMLElement
@@ -236,6 +251,7 @@ enum PPTXReader {
     }
 
     return TextElement(
+      elementId: elementId,
       text: fullText,
       position: position,
       fontSize: fontSize,
@@ -246,6 +262,83 @@ enum PPTXReader {
       underline: underline,
       alignment: alignment
     )
+  }
+
+  private static func parseImageElement(
+    _ pic: XMLElement,
+    elementId: String,
+    relationships: [String: String],
+    slidePath: String
+  ) -> ImageElement? {
+    guard let position = parsePosition(in: pic) else { return nil }
+
+    let blipNodes = try? pic.nodes(forXPath: ".//*[local-name()='blip']")
+    guard let blip = blipNodes?.first as? XMLElement else { return nil }
+    let rId =
+      blip.attribute(forLocalName: "embed", uri: OOXML.nsR)?.stringValue
+      ?? blip.attribute(forName: "r:embed")?.stringValue
+    guard let rId, let target = relationships[rId] else { return nil }
+
+    let slideDirectory = (slidePath as NSString).deletingLastPathComponent
+    let targetPath = URL(fileURLWithPath: slideDirectory)
+      .appendingPathComponent(target)
+      .standardized.path
+    let ext = (targetPath as NSString).pathExtension.lowercased()
+
+    return ImageElement(
+      elementId: elementId,
+      sourcePath: targetPath,
+      position: position,
+      imageExtension: ext.isEmpty ? "png" : ext)
+  }
+
+  private static func parsePosition(in element: XMLElement) -> ElementPosition? {
+    guard let xfrmNodes = try? element.nodes(forXPath: ".//*[local-name()='xfrm']"),
+      let xfrm = xfrmNodes.first as? XMLElement
+    else { return nil }
+
+    let offNodes = try? xfrm.nodes(forXPath: "./*[local-name()='off']")
+    let extNodes = try? xfrm.nodes(forXPath: "./*[local-name()='ext']")
+
+    guard let off = offNodes?.first as? XMLElement,
+      let ext = extNodes?.first as? XMLElement
+    else { return nil }
+
+    let x = Double(off.attribute(forName: "x")?.stringValue ?? "0") ?? 0
+    let y = Double(off.attribute(forName: "y")?.stringValue ?? "0") ?? 0
+    let cx = Double(ext.attribute(forName: "cx")?.stringValue ?? "0") ?? 0
+    let cy = Double(ext.attribute(forName: "cy")?.stringValue ?? "0") ?? 0
+
+    return ElementPosition(
+      x: x / Double(Units.emuPerInch),
+      y: y / Double(Units.emuPerInch),
+      width: cx / Double(Units.emuPerInch),
+      height: cy / Double(Units.emuPerInch)
+    )
+  }
+
+  private static func loadSlideRelationships(forSlidePath path: String, tempDir: String) -> [String:
+    String]
+  {
+    let slideFileName = (path as NSString).lastPathComponent
+    let relsPath = "\(tempDir)/ppt/slides/_rels/\(slideFileName).rels"
+    guard FileManager.default.fileExists(atPath: relsPath),
+      let relsData = try? Data(contentsOf: URL(fileURLWithPath: relsPath)),
+      let relsDoc = try? XMLDocument(data: relsData, options: []),
+      let relNodes = try? relsDoc.nodes(forXPath: "//*[local-name()='Relationship']")
+    else {
+      return [:]
+    }
+
+    var relationships: [String: String] = [:]
+    for node in relNodes {
+      guard let el = node as? XMLElement,
+        let id = el.attribute(forName: "Id")?.stringValue,
+        let target = el.attribute(forName: "Target")?.stringValue
+      else { continue }
+      relationships[id] = target
+    }
+    return relationships
   }
 
   // MARK: - Background Parsing

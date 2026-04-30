@@ -171,17 +171,7 @@ enum PPTXWriter {
     try writeFile(
       generateCorePropsXML(presentation: presentation), to: "\(tempDir)/docProps/core.xml")
 
-    // Package as ZIP
-    // Remove existing file
-    if FileManager.default.fileExists(atPath: outputPath) {
-      try FileManager.default.removeItem(atPath: outputPath)
-    }
-
-    let result = try runProcess(
-      "/usr/bin/zip", arguments: ["-r", "-q", outputPath, "."], currentDirectory: tempDir)
-    if result.exitCode != 0 {
-      throw PPTXError.zipFailed(result.output)
-    }
+    try ArchiveHelper.zipDirectory(tempDir, to: outputPath)
   }
 
   // MARK: - Presentation XML

@@ -10,6 +10,7 @@ final class Presentation: @unchecked Sendable {
   var slideWidth: Int  // EMU
   var slideHeight: Int  // EMU
   var sourcePath: String?  // If read from file
+  var fidelityWarnings: [String] = []
 
   init(
     id: String = UUID().uuidString, title: String, layout: SlideSize = .widescreen,
@@ -107,6 +108,7 @@ final class TextElement: SlideElement, @unchecked Sendable {
   var rotation: Double?  // degrees
 
   init(
+    elementId: String = UUID().uuidString,
     text: String,
     position: ElementPosition,
     fontSize: Double = 18,
@@ -122,7 +124,7 @@ final class TextElement: SlideElement, @unchecked Sendable {
     wordWrap: Bool = true,
     rotation: Double? = nil
   ) {
-    self.elementId = UUID().uuidString
+    self.elementId = elementId
     self.text = text
     self.position = position
     self.fontSize = fontSize
@@ -181,11 +183,12 @@ final class ImageElement: SlideElement, @unchecked Sendable {
   var rId: String?  // relationship ID, set during writing
 
   init(
+    elementId: String = UUID().uuidString,
     sourcePath: String,
     position: ElementPosition,
     imageExtension: String = "png"
   ) {
-    self.elementId = UUID().uuidString
+    self.elementId = elementId
     self.sourcePath = sourcePath
     self.position = position
     self.imageExtension = imageExtension
@@ -208,6 +211,7 @@ final class ShapeElement: SlideElement, @unchecked Sendable {
   var rotation: Double?  // degrees
 
   init(
+    elementId: String = UUID().uuidString,
     shapeType: ShapeType,
     position: ElementPosition,
     fillColor: String? = nil,
@@ -218,7 +222,7 @@ final class ShapeElement: SlideElement, @unchecked Sendable {
     textSize: Double = 14,
     rotation: Double? = nil
   ) {
-    self.elementId = UUID().uuidString
+    self.elementId = elementId
     self.shapeType = shapeType
     self.position = position
     self.fillColor = fillColor
@@ -299,6 +303,7 @@ final class TableElement: SlideElement, @unchecked Sendable {
   var mergedCells: [MergedCell]  // cell merges
 
   init(
+    elementId: String = UUID().uuidString,
     rows: [[String]],
     position: ElementPosition,
     hasHeader: Bool = true,
@@ -311,7 +316,7 @@ final class TableElement: SlideElement, @unchecked Sendable {
     columnWidths: [Double]? = nil,
     mergedCells: [MergedCell] = []
   ) {
-    self.elementId = UUID().uuidString
+    self.elementId = elementId
     self.rows = rows
     self.position = position
     self.hasHeader = hasHeader
@@ -349,6 +354,7 @@ final class ChartElement: SlideElement, @unchecked Sendable {
   var chartIndex: Int = 0  // index for file naming
 
   init(
+    elementId: String = UUID().uuidString,
     chartType: ChartType,
     position: ElementPosition,
     chartTitle: String? = nil,
@@ -357,7 +363,7 @@ final class ChartElement: SlideElement, @unchecked Sendable {
     showLegend: Bool = true,
     showDataLabels: Bool = false
   ) {
-    self.elementId = UUID().uuidString
+    self.elementId = elementId
     self.chartType = chartType
     self.position = position
     self.chartTitle = chartTitle

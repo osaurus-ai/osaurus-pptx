@@ -29,6 +29,10 @@ enum OOXML {
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
   static let relTypeChart =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart"
+  static let relTypeNotesSlide =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide"
+  static let relTypeNotesMaster =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster"
   static let nsChart = "http://schemas.openxmlformats.org/drawingml/2006/chart"
 
   static let contentTypePresentationML =
@@ -43,6 +47,10 @@ enum OOXML {
   static let contentTypeRels = "application/vnd.openxmlformats-package.relationships+xml"
   static let contentTypeCoreProps = "application/vnd.openxmlformats-package.core-properties+xml"
   static let contentTypeChart = "application/vnd.openxmlformats-officedocument.drawingml.chart+xml"
+  static let contentTypeNotesSlide =
+    "application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml"
+  static let contentTypeNotesMaster =
+    "application/vnd.openxmlformats-officedocument.presentationml.notesMaster+xml"
   static let contentTypeXML = "application/xml"
 }
 

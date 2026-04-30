@@ -44,6 +44,15 @@ private class PluginContext: @unchecked Sendable {
   let readPresentation = ReadPresentationTool()
   let getPresentationInfo = GetPresentationInfoTool()
   let savePresentation = SavePresentationTool()
+  let renderPresentation = RenderPresentationTool()
+  let exportPresentation = ExportPresentationTool()
+  let validatePresentation = ValidatePresentationTool()
+  let updateText = UpdateTextTool()
+  let replaceImage = ReplaceImageTool()
+  let moveResizeElement = MoveResizeElementTool()
+  let duplicateSlide = DuplicateSlideTool()
+  let reorderSlides = ReorderSlidesTool()
+  let setSpeakerNotes = SetSpeakerNotesTool()
 }
 
 // Helper to return C strings
@@ -75,8 +84,8 @@ nonisolated(unsafe) private var api: osr_plugin_api = {
       {
         "plugin_id": "osaurus.pptx",
         "name": "Osaurus PPTX",
-        "version": "0.1.0",
-        "description": "Create, modify, and export PowerPoint presentations. Supports text, images, shapes, tables, charts, themes, and more.",
+        "version": "0.2.0",
+        "description": "Create, inspect, patch, render, validate, and export PowerPoint presentations. Existing deck editing preserves OOXML packages where targeted patch tools are used.",
         "license": "MIT",
         "authors": [],
         "min_macos": "15.0",
@@ -312,6 +321,163 @@ nonisolated(unsafe) private var api: osr_plugin_api = {
               },
               "requirements": [],
               "permission_policy": "ask"
+            },
+            {
+              "id": "validate_presentation",
+              "description": "Validate and structurally inspect a PPTX/PPSX/POTX file. Accepts path or attachment_id from _context.attachments.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {"type": "string"},
+                  "attachment_id": {"type": "string"}
+                }
+              },
+              "requirements": [],
+              "permission_policy": "ask"
+            },
+            {
+              "id": "render_presentation",
+              "description": "Render a presentation to PDF using LibreOffice when available. Returns converter_unavailable if no converter is installed.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {"type": "string"},
+                  "attachment_id": {"type": "string"},
+                  "presentation_id": {"type": "string"},
+                  "output_path": {"type": "string", "description": "PDF output path; .pdf is added if missing"}
+                }
+              },
+              "requirements": [],
+              "permission_policy": "ask"
+            },
+            {
+              "id": "export_presentation",
+              "description": "Export PPT/PPTX/PPSX/POTX to PDF or PPTX. PPT input requires LibreOffice; PPTX-to-PPTX can copy without conversion.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {"type": "string"},
+                  "attachment_id": {"type": "string"},
+                  "presentation_id": {"type": "string"},
+                  "output_path": {"type": "string"},
+                  "format": {"type": "string", "description": "pdf or pptx"}
+                },
+                "required": ["output_path"]
+              },
+              "requirements": [],
+              "permission_policy": "ask"
+            },
+            {
+              "id": "update_text",
+              "description": "Patch text in an existing PPTX package by slide_number plus element_id from read_presentation or match_text. Writes a new PPTX.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {"type": "string"},
+                  "attachment_id": {"type": "string"},
+                  "presentation_id": {"type": "string"},
+                  "output_path": {"type": "string"},
+                  "slide_number": {"type": "integer"},
+                  "element_id": {"type": "string"},
+                  "match_text": {"type": "string"},
+                  "replacement_text": {"type": "string"}
+                },
+                "required": ["output_path", "slide_number", "replacement_text"]
+              },
+              "requirements": [],
+              "permission_policy": "ask"
+            },
+            {
+              "id": "replace_image",
+              "description": "Replace an existing image part in a PPTX package. Updates relationships and content types when the replacement image extension changes.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {"type": "string"},
+                  "attachment_id": {"type": "string"},
+                  "presentation_id": {"type": "string"},
+                  "output_path": {"type": "string"},
+                  "slide_number": {"type": "integer"},
+                  "element_id": {"type": "string"},
+                  "image_path": {"type": "string"}
+                },
+                "required": ["output_path", "slide_number", "element_id", "image_path"]
+              },
+              "requirements": [],
+              "permission_policy": "ask"
+            },
+            {
+              "id": "move_resize_element",
+              "description": "Patch an existing text or image element transform in a PPTX package using inch coordinates.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {"type": "string"},
+                  "attachment_id": {"type": "string"},
+                  "presentation_id": {"type": "string"},
+                  "output_path": {"type": "string"},
+                  "slide_number": {"type": "integer"},
+                  "element_id": {"type": "string"},
+                  "x": {"type": "number"},
+                  "y": {"type": "number"},
+                  "width": {"type": "number"},
+                  "height": {"type": "number"}
+                },
+                "required": ["output_path", "slide_number", "element_id"]
+              },
+              "requirements": [],
+              "permission_policy": "ask"
+            },
+            {
+              "id": "duplicate_slide",
+              "description": "Duplicate a slide in an existing PPTX package and append it to the deck.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {"type": "string"},
+                  "attachment_id": {"type": "string"},
+                  "presentation_id": {"type": "string"},
+                  "output_path": {"type": "string"},
+                  "slide_number": {"type": "integer"}
+                },
+                "required": ["output_path", "slide_number"]
+              },
+              "requirements": [],
+              "permission_policy": "ask"
+            },
+            {
+              "id": "reorder_slides",
+              "description": "Reorder an existing PPTX package using a 1-based slide_order permutation.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {"type": "string"},
+                  "attachment_id": {"type": "string"},
+                  "presentation_id": {"type": "string"},
+                  "output_path": {"type": "string"},
+                  "slide_order": {"type": "array", "items": {"type": "integer"}}
+                },
+                "required": ["output_path", "slide_order"]
+              },
+              "requirements": [],
+              "permission_policy": "ask"
+            },
+            {
+              "id": "set_speaker_notes",
+              "description": "Patch speaker notes for one slide in an existing PPTX package and write a new PPTX.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {"type": "string"},
+                  "attachment_id": {"type": "string"},
+                  "presentation_id": {"type": "string"},
+                  "output_path": {"type": "string"},
+                  "slide_number": {"type": "integer"},
+                  "notes": {"type": "string"}
+                }
+              },
+              "requirements": [],
+              "permission_policy": "ask"
             }
           ]
         }
@@ -362,6 +528,24 @@ nonisolated(unsafe) private var api: osr_plugin_api = {
       result = ctx.getPresentationInfo.run(args: payload, presentations: &ctx.presentations)
     case ctx.savePresentation.name:
       result = ctx.savePresentation.run(args: payload, presentations: &ctx.presentations)
+    case ctx.renderPresentation.name:
+      result = ctx.renderPresentation.run(args: payload, presentations: ctx.presentations)
+    case ctx.exportPresentation.name:
+      result = ctx.exportPresentation.run(args: payload, presentations: ctx.presentations)
+    case ctx.validatePresentation.name:
+      result = ctx.validatePresentation.run(args: payload)
+    case ctx.updateText.name:
+      result = ctx.updateText.run(args: payload, presentations: ctx.presentations)
+    case ctx.replaceImage.name:
+      result = ctx.replaceImage.run(args: payload, presentations: ctx.presentations)
+    case ctx.moveResizeElement.name:
+      result = ctx.moveResizeElement.run(args: payload, presentations: ctx.presentations)
+    case ctx.duplicateSlide.name:
+      result = ctx.duplicateSlide.run(args: payload, presentations: ctx.presentations)
+    case ctx.reorderSlides.name:
+      result = ctx.reorderSlides.run(args: payload, presentations: ctx.presentations)
+    case ctx.setSpeakerNotes.name:
+      result = ctx.setSpeakerNotes.run(args: payload, presentations: ctx.presentations)
     default:
       result = jsonError("Unknown tool: \(id)")
     }
