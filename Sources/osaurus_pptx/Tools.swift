@@ -3,7 +3,20 @@ import Foundation
 // MARK: - Shared Decodable Types
 
 struct FolderContext: Decodable {
-  let working_directory: String
+  let working_directory: String?
+  let attachments: [InputAttachment]?
+}
+
+struct InputAttachment: Decodable {
+  let id: String
+  let filename: String
+  let mime_type: String
+  let file_size: Int?
+  let host_path: String
+
+  var pathExtension: String {
+    (host_path as NSString).pathExtension.lowercased()
+  }
 }
 
 // MARK: - Path Validation Result
@@ -33,11 +46,110 @@ func validatePath(_ path: String, workingDirectory: String?) -> PathResult {
 
   // Resolve and validate
   let resolved = URL(fileURLWithPath: absolutePath).standardized.path
-  guard resolved.hasPrefix(workDir) else {
+  let resolvedWorkDir = URL(fileURLWithPath: workDir).standardized.path
+  guard resolved == resolvedWorkDir || resolved.hasPrefix(resolvedWorkDir + "/") else {
     return .failure("Path is outside the working directory")
   }
 
   return .success(resolved)
+}
+
+func resolveInputPath(
+  path: String?,
+  attachmentId: String?,
+  context: FolderContext?,
+  allowedExtensions: Set<String>
+) -> PathResult {
+  let attachments = context?.attachments ?? []
+
+  if let attachmentId, !attachmentId.isEmpty {
+    guard
+      let attachment = attachments.first(where: {
+        $0.id == attachmentId || $0.filename == attachmentId || $0.host_path == attachmentId
+      })
+    else {
+      return .failure("Attachment not found in _context.attachments: \(attachmentId)")
+    }
+    return validateResolvedInputPath(
+      attachment.host_path, displayName: attachment.filename, allowedExtensions: allowedExtensions)
+  }
+
+  if let path, !path.isEmpty {
+    if let attachment = attachments.first(where: {
+      $0.id == path || $0.filename == path || $0.host_path == path
+    }) {
+      return validateResolvedInputPath(
+        attachment.host_path, displayName: attachment.filename, allowedExtensions: allowedExtensions)
+    }
+
+    let pathResult = validatePath(path, workingDirectory: context?.working_directory)
+    switch pathResult {
+    case .success(let resolved):
+      return validateResolvedInputPath(
+        resolved, displayName: path, allowedExtensions: allowedExtensions)
+    case .failure(let message):
+      return .failure(message)
+    }
+  }
+
+  return .failure("Provide either path or attachment_id")
+}
+
+func validateResolvedInputPath(
+  _ resolvedPath: String,
+  displayName: String,
+  allowedExtensions: Set<String>
+) -> PathResult {
+  let ext = (resolvedPath as NSString).pathExtension.lowercased()
+  guard allowedExtensions.contains(ext) else {
+    return .failure(
+      "Unsupported file format for \(displayName): \(ext). Supported: \(allowedExtensions.sorted().joined(separator: ", "))"
+    )
+  }
+
+  guard FileManager.default.fileExists(atPath: resolvedPath) else {
+    return .failure("File not found: \(displayName)")
+  }
+
+  return .success(resolvedPath)
+}
+
+func resolveSourcePresentationPath(
+  path: String?,
+  attachmentId: String?,
+  presentationId: String?,
+  context: FolderContext?,
+  presentations: [String: Presentation]
+) -> PathResult {
+  if path != nil || attachmentId != nil {
+    return resolveInputPath(
+      path: path,
+      attachmentId: attachmentId,
+      context: context,
+      allowedExtensions: ["ppt", "pptx", "ppsx", "potx"])
+  }
+
+  if let presentationId {
+    guard let presentation = presentations[presentationId] else {
+      return .failure("Presentation not found: \(presentationId)")
+    }
+    guard let sourcePath = presentation.sourcePath else {
+      return .failure("Presentation \(presentationId) was created in memory and has no source file")
+    }
+    return validateResolvedInputPath(
+      sourcePath,
+      displayName: sourcePath,
+      allowedExtensions: ["ppt", "pptx", "ppsx", "potx"])
+  }
+
+  return .failure("Provide path, attachment_id, or presentation_id")
+}
+
+func structuredStatus(_ status: String, message: String, fields: [String: Any] = [:]) -> String {
+  var result = fields
+  result["status"] = status
+  result["message"] = message
+  return jsonSuccess(result)
 }
 
 // MARK: - Tool: create_presentation
@@ -641,7 +753,8 @@ struct ReadPresentationTool {
   let name = "read_presentation"
 
   struct Args: Decodable {
-    let path: String
+    let path: String?
+    let attachment_id: String?
     let _context: FolderContext?
   }
 
@@ -649,33 +762,63 @@ struct ReadPresentationTool {
     guard let data = args.data(using: .utf8),
       let input = try? JSONDecoder().decode(Args.self, from: data)
     else {
-      return jsonError("Invalid arguments. Required: path (string)")
+      return jsonError("Invalid arguments. Provide path or attachment_id")
     }
 
-    let pathResult = validatePath(input.path, workingDirectory: input._context?.working_directory)
+    let pathResult = resolveInputPath(
+      path: input.path,
+      attachmentId: input.attachment_id,
+      context: input._context,
+      allowedExtensions: ["pptx", "ppsx", "potx"])
     let absolutePath: String
     switch pathResult {
     case .success(let p): absolutePath = p
     case .failure(let msg): return jsonError(msg)
     }
 
-    guard FileManager.default.fileExists(atPath: absolutePath) else {
-      return jsonError("File not found: \(input.path)")
-    }
-
     do {
       let pres = try PPTXReader.read(from: absolutePath)
       presentations[pres.id] = pres
 
+      let slidesJSON = ReadPresentationTool.describeSlides(pres)
       return jsonSuccess([
         "presentation_id": pres.id,
         "title": pres.title,
         "slide_count": pres.slides.count,
+        "width_inches": Double(pres.slideWidth) / Double(Units.emuPerInch),
+        "height_inches": Double(pres.slideHeight) / Double(Units.emuPerInch),
         "source_path": absolutePath,
+        "slides": JSONRaw(slidesJSON),
+        "fidelity_warnings": pres.fidelityWarnings,
       ])
     } catch {
       return jsonError("Failed to read PPTX: \(error)")
     }
+  }
+
+  private static func describeSlides(_ presentation: Presentation) -> String {
+    var slides: [String] = []
+    for (slideIndex, slide) in presentation.slides.enumerated() {
+      var elements: [String] = []
+      for element in slide.elements {
+        if let text = element as? TextElement {
+          elements.append(
+            """
+            {"id": "\(jsonEscape(text.elementId))", "type": "text", "text": "\(jsonEscape(text.text))", "x": \(text.position.x), "y": \(text.position.y), "width": \(text.position.width), "height": \(text.position.height), "font_size": \(text.fontSize)}
+            """)
+        } else if let image = element as? ImageElement {
+          elements.append(
+            """
+            {"id": "\(jsonEscape(image.elementId))", "type": "image", "path": "\(jsonEscape(image.sourcePath))", "x": \(image.position.x), "y": \(image.position.y), "width": \(image.position.width), "height": \(image.position.height)}
+            """)
+        }
+      }
+      slides.append(
+        """
+        {"number": \(slideIndex + 1), "id": "\(jsonEscape(slide.id))", "layout": "\(slide.layoutType.rawValue)", "element_count": \(slide.elements.count), "elements": [\(elements.joined(separator: ","))]}
+        """)
+    }
+    return "[\(slides.joined(separator: ","))]"
   }
 }
 
@@ -827,4 +970,593 @@ struct SavePresentationTool {
       return jsonError("Failed to save presentation: \(error)")
     }
   }
+}
+
+// MARK: - Tool: validate_presentation
+
+struct ValidatePresentationTool {
+  let name = "validate_presentation"
+
+  struct Args: Decodable {
+    let path: String?
+    let attachment_id: String?
+    let _context: FolderContext?
+  }
+
+  func run(args: String) -> String {
+    guard let data = args.data(using: .utf8),
+      let input = try? JSONDecoder().decode(Args.self, from: data)
+    else {
+      return jsonError("Invalid arguments. Provide path or attachment_id")
+    }
+
+    let source = resolveInputPath(
+      path: input.path,
+      attachmentId: input.attachment_id,
+      context: input._context,
+      allowedExtensions: ["pptx", "ppsx", "potx"])
+    let absolutePath: String
+    switch source {
+    case .success(let path): absolutePath = path
+    case .failure(let message): return jsonError(message)
+    }
+
+    do {
+      let inspection = try PPTXPackage.inspect(filePath: absolutePath)
+      return jsonSuccess([
+        "valid": true,
+        "path": absolutePath,
+        "slide_count": inspection.slideCount,
+        "width_inches": Double(inspection.widthEMU) / Double(Units.emuPerInch),
+        "height_inches": Double(inspection.heightEMU) / Double(Units.emuPerInch),
+        "slides": JSONRaw(inspection.slidesJSON),
+        "warnings": inspection.warnings,
+      ])
+    } catch {
+      return jsonSuccess([
+        "valid": false,
+        "path": absolutePath,
+        "errors": [String(describing: error)],
+      ])
+    }
+  }
+}
+
+// MARK: - Tool: export_presentation
+
+struct ExportPresentationTool {
+  let name = "export_presentation"
+
+  struct Args: Decodable {
+    let path: String?
+    let attachment_id: String?
+    let presentation_id: String?
+    let output_path: String
+    let format: String?
+    let _context: FolderContext?
+  }
+
+  func run(args: String, presentations: [String: Presentation]) -> String {
+    guard let data = args.data(using: .utf8),
+      let input = try? JSONDecoder().decode(Args.self, from: data)
+    else {
+      return jsonError("Invalid arguments. Required: output_path plus path, attachment_id, or presentation_id")
+    }
+
+    let source = resolveSourcePresentationPath(
+      path: input.path,
+      attachmentId: input.attachment_id,
+      presentationId: input.presentation_id,
+      context: input._context,
+      presentations: presentations)
+    let inputPath: String
+    switch source {
+    case .success(let path): inputPath = path
+    case .failure(let message): return jsonError(message)
+    }
+
+    let requestedFormat = (input.format ?? (input.output_path as NSString).pathExtension)
+      .lowercased()
+    let format = requestedFormat.isEmpty ? "pdf" : requestedFormat
+    guard ["pdf", "pptx"].contains(format) else {
+      return jsonError("Unsupported export format: \(format). Supported: pdf, pptx")
+    }
+
+    let outputResult = validatePath(input.output_path, workingDirectory: input._context?.working_directory)
+    let outputPath: String
+    switch outputResult {
+    case .success(let path): outputPath = path.hasSuffix(".\(format)") ? path : "\(path).\(format)"
+    case .failure(let message): return jsonError(message)
+    }
+
+    let inputExt = (inputPath as NSString).pathExtension.lowercased()
+    if format == "pptx", inputExt == "pptx" {
+      do {
+        let outputDir = (outputPath as NSString).deletingLastPathComponent
+        try createDirectoryIfNeeded(outputDir)
+        if FileManager.default.fileExists(atPath: outputPath) {
+          try FileManager.default.removeItem(atPath: outputPath)
+        }
+        try FileManager.default.copyItem(atPath: inputPath, toPath: outputPath)
+        return jsonSuccess([
+          "status": "ok",
+          "input_path": inputPath,
+          "output_path": outputPath,
+          "format": format,
+          "converter_used": false,
+        ])
+      } catch {
+        return jsonError("Failed to copy PPTX: \(error)")
+      }
+    }
+
+    let filter: String
+    switch format {
+    case "pdf":
+      filter = "impress_pdf_Export"
+    case "pptx":
+      filter = "Impress MS PowerPoint 2007 XML"
+    default:
+      filter = ""
+    }
+
+    do {
+      let result = try ConverterHelper.convertPresentation(
+        inputPath: inputPath,
+        outputPath: outputPath,
+        format: format,
+        filter: filter)
+      return converterResultJSON(result, format: format)
+    } catch {
+      return jsonError("Export failed: \(error)")
+    }
+  }
+}
+
+// MARK: - Tool: render_presentation
+
+struct RenderPresentationTool {
+  let name = "render_presentation"
+
+  struct Args: Decodable {
+    let path: String?
+    let attachment_id: String?
+    let presentation_id: String?
+    let output_path: String?
+    let _context: FolderContext?
+  }
+
+  func run(args: String, presentations: [String: Presentation]) -> String {
+    guard let data = args.data(using: .utf8),
+      let input = try? JSONDecoder().decode(Args.self, from: data)
+    else {
+      return jsonError("Invalid arguments. Provide path, attachment_id, or presentation_id")
+    }
+
+    let source = resolveSourcePresentationPath(
+      path: input.path,
+      attachmentId: input.attachment_id,
+      presentationId: input.presentation_id,
+      context: input._context,
+      presentations: presentations)
+    let inputPath: String
+    switch source {
+    case .success(let path): inputPath = path
+    case .failure(let message): return jsonError(message)
+    }
+
+    let defaultName =
+      ((inputPath as NSString).lastPathComponent as NSString).deletingPathExtension + ".pdf"
+    let requestedOutput = input.output_path ?? defaultName
+    let outputResult = validatePath(requestedOutput, workingDirectory: input._context?.working_directory)
+    let outputPath: String
+    switch outputResult {
+    case .success(let path): outputPath = path.hasSuffix(".pdf") ? path : "\(path).pdf"
+    case .failure(let message): return jsonError(message)
+    }
+
+    do {
+      let result = try ConverterHelper.convertPresentation(
+        inputPath: inputPath,
+        outputPath: outputPath,
+        format: "pdf",
+        filter: "impress_pdf_Export")
+      return converterResultJSON(result, format: "pdf")
+    } catch {
+      return jsonError("Render failed: \(error)")
+    }
+  }
+}
+
+// MARK: - Tool: update_text
+
+struct UpdateTextTool {
+  let name = "update_text"
+
+  struct Args: Decodable {
+    let path: String?
+    let attachment_id: String?
+    let presentation_id: String?
+    let output_path: String
+    let slide_number: Int
+    let element_id: String?
+    let match_text: String?
+    let replacement_text: String
+    let _context: FolderContext?
+  }
+
+  func run(args: String, presentations: [String: Presentation]) -> String {
+    guard let data = args.data(using: .utf8),
+      let input = try? JSONDecoder().decode(Args.self, from: data)
+    else {
+      return jsonError(
+        "Invalid arguments. Required: output_path, slide_number, replacement_text, plus path/attachment_id/presentation_id")
+    }
+    guard input.element_id != nil || input.match_text != nil else {
+      return jsonError("Provide element_id or match_text so update_text has a precise target")
+    }
+
+    let source = resolveSourcePresentationPath(
+      path: input.path,
+      attachmentId: input.attachment_id,
+      presentationId: input.presentation_id,
+      context: input._context,
+      presentations: presentations)
+    let inputPath: String
+    switch source {
+    case .success(let path): inputPath = path
+    case .failure(let message): return jsonError(message)
+    }
+
+    let outputPathResult = validatePath(input.output_path, workingDirectory: input._context?.working_directory)
+    let outputPath: String
+    switch outputPathResult {
+    case .success(let path): outputPath = path.hasSuffix(".pptx") ? path : "\(path).pptx"
+    case .failure(let message): return jsonError(message)
+    }
+
+    do {
+      let report = try PPTXPackage.updateText(
+        inputPath: inputPath,
+        outputPath: outputPath,
+        slideNumber: input.slide_number,
+        elementId: input.element_id,
+        matchText: input.match_text,
+        replacementText: input.replacement_text)
+      return jsonSuccess([
+        "status": "ok",
+        "output_path": report.outputPath,
+        "changed_count": report.changedCount,
+        "warnings": report.warnings,
+      ])
+    } catch {
+      return jsonError("Failed to update text: \(error)")
+    }
+  }
+}
+
+// MARK: - Tool: replace_image
+
+struct ReplaceImageTool {
+  let name = "replace_image"
+
+  struct Args: Decodable {
+    let path: String?
+    let attachment_id: String?
+    let presentation_id: String?
+    let output_path: String
+    let slide_number: Int
+    let element_id: String
+    let image_path: String
+    let _context: FolderContext?
+  }
+
+  func run(args: String, presentations: [String: Presentation]) -> String {
+    guard let data = args.data(using: .utf8),
+      let input = try? JSONDecoder().decode(Args.self, from: data)
+    else {
+      return jsonError("Invalid arguments. Required: output_path, slide_number, element_id, image_path")
+    }
+
+    let source = resolveSourcePresentationPath(
+      path: input.path,
+      attachmentId: input.attachment_id,
+      presentationId: input.presentation_id,
+      context: input._context,
+      presentations: presentations)
+    let inputPath: String
+    switch source {
+    case .success(let path): inputPath = path
+    case .failure(let message): return jsonError(message)
+    }
+
+    let imageResult = validatePath(input.image_path, workingDirectory: input._context?.working_directory)
+    let imagePath: String
+    switch imageResult {
+    case .success(let path): imagePath = path
+    case .failure(let message): return jsonError(message)
+    }
+
+    let outputResult = validatePath(input.output_path, workingDirectory: input._context?.working_directory)
+    let outputPath: String
+    switch outputResult {
+    case .success(let path): outputPath = path.hasSuffix(".pptx") ? path : "\(path).pptx"
+    case .failure(let message): return jsonError(message)
+    }
+
+    do {
+      let report = try PPTXPackage.replaceImage(
+        inputPath: inputPath,
+        outputPath: outputPath,
+        slideNumber: input.slide_number,
+        elementId: input.element_id,
+        imagePath: imagePath)
+      return jsonSuccess([
+        "status": "ok",
+        "output_path": report.outputPath,
+        "changed_count": report.changedCount,
+        "warnings": report.warnings,
+      ])
+    } catch {
+      return jsonError("Failed to replace image: \(error)")
+    }
+  }
+}
+
+// MARK: - Tool: move_resize_element
+
+struct MoveResizeElementTool {
+  let name = "move_resize_element"
+
+  struct Args: Decodable {
+    let path: String?
+    let attachment_id: String?
+    let presentation_id: String?
+    let output_path: String
+    let slide_number: Int
+    let element_id: String
+    let x: Double?
+    let y: Double?
+    let width: Double?
+    let height: Double?
+    let _context: FolderContext?
+  }
+
+  func run(args: String, presentations: [String: Presentation]) -> String {
+    guard let data = args.data(using: .utf8),
+      let input = try? JSONDecoder().decode(Args.self, from: data)
+    else {
+      return jsonError("Invalid arguments. Required: output_path, slide_number, element_id")
+    }
+
+    let source = resolveSourcePresentationPath(
+      path: input.path,
+      attachmentId: input.attachment_id,
+      presentationId: input.presentation_id,
+      context: input._context,
+      presentations: presentations)
+    let inputPath: String
+    switch source {
+    case .success(let path): inputPath = path
+    case .failure(let message): return jsonError(message)
+    }
+
+    let outputResult = validatePath(input.output_path, workingDirectory: input._context?.working_directory)
+    let outputPath: String
+    switch outputResult {
+    case .success(let path): outputPath = path.hasSuffix(".pptx") ? path : "\(path).pptx"
+    case .failure(let message): return jsonError(message)
+    }
+
+    do {
+      let report = try PPTXPackage.moveResizeElement(
+        inputPath: inputPath,
+        outputPath: outputPath,
+        slideNumber: input.slide_number,
+        elementId: input.element_id,
+        x: input.x,
+        y: input.y,
+        width: input.width,
+        height: input.height)
+      return jsonSuccess([
+        "status": "ok",
+        "output_path": report.outputPath,
+        "changed_count": report.changedCount,
+        "warnings": report.warnings,
+      ])
+    } catch {
+      return jsonError("Failed to move/resize element: \(error)")
+    }
+  }
+}
+
+// MARK: - Tool: duplicate_slide
+
+struct DuplicateSlideTool {
+  let name = "duplicate_slide"
+
+  struct Args: Decodable {
+    let path: String?
+    let attachment_id: String?
+    let presentation_id: String?
+    let output_path: String
+    let slide_number: Int
+    let _context: FolderContext?
+  }
+
+  func run(args: String, presentations: [String: Presentation]) -> String {
+    guard let data = args.data(using: .utf8),
+      let input = try? JSONDecoder().decode(Args.self, from: data)
+    else {
+      return jsonError("Invalid arguments. Required: output_path and slide_number")
+    }
+
+    let source = resolveSourcePresentationPath(
+      path: input.path,
+      attachmentId: input.attachment_id,
+      presentationId: input.presentation_id,
+      context: input._context,
+      presentations: presentations)
+    let inputPath: String
+    switch source {
+    case .success(let path): inputPath = path
+    case .failure(let message): return jsonError(message)
+    }
+
+    let outputResult = validatePath(input.output_path, workingDirectory: input._context?.working_directory)
+    let outputPath: String
+    switch outputResult {
+    case .success(let path): outputPath = path.hasSuffix(".pptx") ? path : "\(path).pptx"
+    case .failure(let message): return jsonError(message)
+    }
+
+    do {
+      let report = try PPTXPackage.duplicateSlide(
+        inputPath: inputPath,
+        outputPath: outputPath,
+        slideNumber: input.slide_number)
+      return jsonSuccess([
+        "status": "ok",
+        "output_path": report.outputPath,
+        "changed_count": report.changedCount,
+        "warnings": report.warnings,
+      ])
+    } catch {
+      return jsonError("Failed to duplicate slide: \(error)")
+    }
+  }
+}
+
+// MARK: - Tool: reorder_slides
+
+struct ReorderSlidesTool {
+  let name = "reorder_slides"
+
+  struct Args: Decodable {
+    let path: String?
+    let attachment_id: String?
+    let presentation_id: String?
+    let output_path: String
+    let slide_order: [Int]
+    let _context: FolderContext?
+  }
+
+  func run(args: String, presentations: [String: Presentation]) -> String {
+    guard let data = args.data(using: .utf8),
+      let input = try? JSONDecoder().decode(Args.self, from: data)
+    else {
+      return jsonError("Invalid arguments. Required: output_path and slide_order")
+    }
+
+    let source = resolveSourcePresentationPath(
+      path: input.path,
+      attachmentId: input.attachment_id,
+      presentationId: input.presentation_id,
+      context: input._context,
+      presentations: presentations)
+    let inputPath: String
+    switch source {
+    case .success(let path): inputPath = path
+    case .failure(let message): return jsonError(message)
+    }
+
+    let outputResult = validatePath(input.output_path, workingDirectory: input._context?.working_directory)
+    let outputPath: String
+    switch outputResult {
+    case .success(let path): outputPath = path.hasSuffix(".pptx") ? path : "\(path).pptx"
+    case .failure(let message): return jsonError(message)
+    }
+
+    do {
+      let report = try PPTXPackage.reorderSlides(
+        inputPath: inputPath,
+        outputPath: outputPath,
+        slideOrder: input.slide_order)
+      return jsonSuccess([
+        "status": "ok",
+        "output_path": report.outputPath,
+        "changed_count": report.changedCount,
+        "warnings": report.warnings,
+      ])
+    } catch {
+      return jsonError("Failed to reorder slides: \(error)")
+    }
+  }
+}
+
+// MARK: - Tool: set_speaker_notes
+
+struct SetSpeakerNotesTool {
+  let name = "set_speaker_notes"
+
+  struct Args: Decodable {
+    let path: String?
+    let attachment_id: String?
+    let presentation_id: String?
+    let output_path: String?
+    let slide_number: Int?
+    let notes: String?
+    let _context: FolderContext?
+  }
+
+  func run(args: String, presentations: [String: Presentation]) -> String {
+    guard let data = args.data(using: .utf8),
+      let input = try? JSONDecoder().decode(Args.self, from: data)
+    else {
+      return jsonError("Invalid arguments. Required: output_path, slide_number, notes")
+    }
+    guard let slideNumber = input.slide_number, let notes = input.notes else {
+      return jsonError("Required: slide_number and notes")
+    }
+    guard let output = input.output_path else {
+      return jsonError("Required: output_path")
+    }
+
+    let source = resolveSourcePresentationPath(
+      path: input.path,
+      attachmentId: input.attachment_id,
+      presentationId: input.presentation_id,
+      context: input._context,
+      presentations: presentations)
+    let inputPath: String
+    switch source {
+    case .success(let path): inputPath = path
+    case .failure(let message): return jsonError(message)
+    }
+
+    let outputResult = validatePath(output, workingDirectory: input._context?.working_directory)
+    let outputPath: String
+    switch outputResult {
+    case .success(let path): outputPath = path.hasSuffix(".pptx") ? path : "\(path).pptx"
+    case .failure(let message): return jsonError(message)
+    }
+
+    do {
+      let report = try PPTXPackage.setSpeakerNotes(
+        inputPath: inputPath,
+        outputPath: outputPath,
+        slideNumber: slideNumber,
+        notes: notes)
+      return jsonSuccess([
+        "status": "ok",
+        "output_path": report.outputPath,
+        "changed_count": report.changedCount,
+        "warnings": report.warnings,
+      ])
+    } catch {
+      return jsonError("Failed to set speaker notes: \(error)")
+    }
+  }
+}
+
+private func converterResultJSON(_ result: ConverterResult, format: String) -> String {
+  jsonSuccess([
+    "status": result.status,
+    "input_path": result.inputPath,
+    "output_path": result.outputPath ?? "",
+    "format": format,
+    "converter_path": result.executablePath ?? "",
+    "message": result.message,
+    "converter_used": result.executablePath != nil,
+  ])
 }

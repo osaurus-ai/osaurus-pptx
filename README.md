@@ -1,6 +1,8 @@
 # osaurus-pptx
 
-An [Osaurus](https://osaurus.ai) plugin for creating, reading, and modifying PowerPoint (.pptx) presentations. Supports text, images, shapes, tables, charts, themes, backgrounds, and more — with no external dependencies.
+An [Osaurus](https://osaurus.ai) plugin for creating, inspecting, patching, rendering, validating, and exporting PowerPoint presentations.
+
+New `.pptx` decks can be generated without external dependencies. Existing deck edits use package-level OOXML patching where possible so unrelated masters, layouts, charts, media, and relationships are preserved. Rendering and legacy `.ppt` conversion are optional LibreOffice-backed helpers.
 
 ## Tools
 
@@ -18,6 +20,27 @@ An [Osaurus](https://osaurus.ai) plugin for creating, reading, and modifying Pow
 | `read_presentation`     | Read an existing .pptx file into memory                                                             |
 | `get_presentation_info` | Get metadata and content summary, with optional detailed element info                               |
 | `save_presentation`     | Save a presentation as a .pptx file                                                                 |
+| `validate_presentation` | Validate and structurally inspect a PPTX-style package                                              |
+| `render_presentation`   | Render a presentation to PDF using LibreOffice when available                                       |
+| `export_presentation`   | Export PPT/PPTX/PPSX/POTX to PDF or PPTX                                                           |
+| `update_text`           | Patch text in an existing PPTX package and write a new file                                         |
+| `replace_image`         | Replace an existing image part while updating relationships/content types as needed                 |
+| `move_resize_element`   | Move or resize an existing text/image element using inch coordinates                                |
+| `duplicate_slide`       | Duplicate a slide and append it to the deck                                                         |
+| `reorder_slides`        | Reorder slides using a 1-based complete permutation                                                 |
+| `set_speaker_notes`     | Patch speaker notes for a slide                                                                     |
+
+## High-fidelity workflow
+
+Existing file tasks should follow:
+
+1. Attach/import the original file.
+2. Inspect with `read_presentation` or `validate_presentation`.
+3. Patch with the narrowest package tool.
+4. Render/export with `render_presentation` or `export_presentation`.
+5. Validate the changed package before sharing.
+
+`.pptx` is the editable canonical format. Legacy `.ppt` is convert-only and requires LibreOffice.
 
 ## Themes
 

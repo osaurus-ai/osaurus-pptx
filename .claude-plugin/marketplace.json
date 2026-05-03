@@ -1,0 +1,23 @@
+{
+  "name": "Osaurus PPTX",
+  "owner": {
+    "name": "Osaurus",
+    "url": "https://github.com/osaurus-ai/osaurus-pptx"
+  },
+  "metadata": {
+    "description": "High-fidelity PPTX creation, inspection, patching, validation, rendering, and export workflow guidance.",
+    "version": "0.2.0",
+    "repository": "https://github.com/osaurus-ai/osaurus-pptx"
+  },
+  "plugins": [
+    {
+      "name": "osaurus-pptx",
+      "description": "PowerPoint workflow guidance for the Osaurus PPTX plugin.",
+      "source": ".",
+      "strict": true,
+      "skills": [
+        "."
+      ]
+    }
+  ]
+}
