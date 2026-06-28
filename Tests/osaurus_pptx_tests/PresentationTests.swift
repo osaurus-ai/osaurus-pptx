@@ -297,7 +297,9 @@ struct ToolExecutionTests {
     let result = tool.run(
       args: "{\"presentation_id\": \"nonexistent\"}", presentations: &presentations)
     let json = parseJSON(result)
-    #expect(json?["error"] != nil)
+    #expect(json?["ok"] as? Bool == false)
+    #expect(json?["kind"] as? String == "not_found")
+    #expect(json?["error"] == nil)
   }
 
   @Test("add_text with all formatting options")
@@ -337,7 +339,8 @@ struct ToolExecutionTests {
       args: "{\"presentation_id\": \"\(presId)\", \"slide_number\": 99, \"text\": \"test\"}",
       presentations: &presentations)
     let json = parseJSON(result)
-    #expect(json?["error"] != nil)
+    #expect(json?["ok"] as? Bool == false)
+    #expect(json?["kind"] as? String == "invalid_args")
   }
 
   @Test("add_shape with various shape types")
@@ -373,8 +376,9 @@ struct ToolExecutionTests {
         "{\"presentation_id\": \"\(presId)\", \"slide_number\": 1, \"shape_type\": \"nonexistent\"}",
       presentations: &presentations)
     let json = parseJSON(result)
-    #expect(json?["error"] != nil)
-    #expect((json?["error"] as? String)?.contains("Invalid shape type") == true)
+    #expect(json?["ok"] as? Bool == false)
+    #expect(json?["kind"] as? String == "invalid_args")
+    #expect((json?["message"] as? String)?.contains("Invalid shape type") == true)
   }
 
   @Test("add_table with header and data rows")
