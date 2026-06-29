@@ -56,7 +56,7 @@ struct CreatePresentationTool {
     guard let data = args.data(using: .utf8),
       let input = try? JSONDecoder().decode(Args.self, from: data)
     else {
-      return jsonError("Invalid arguments. Required: title (string)")
+      return Envelope.failure(.invalidArgs, "Invalid arguments. Required: title (string)")
     }
 
     let slideSize: SlideSize
@@ -116,11 +116,11 @@ struct AddSlideTool {
     guard let data = args.data(using: .utf8),
       let input = try? JSONDecoder().decode(Args.self, from: data)
     else {
-      return jsonError("Invalid arguments. Required: presentation_id (string)")
+      return Envelope.failure(.invalidArgs, "Invalid arguments. Required: presentation_id (string)")
     }
 
     guard let pres = presentations[input.presentation_id] else {
-      return jsonError("Presentation not found: \(input.presentation_id)")
+      return Envelope.failure(.notFound, "Presentation not found: \(input.presentation_id)")
     }
 
     let layoutType: SlideLayoutType
@@ -175,15 +175,16 @@ struct AddTextTool {
     guard let data = args.data(using: .utf8),
       let input = try? JSONDecoder().decode(Args.self, from: data)
     else {
-      return jsonError("Invalid arguments. Required: presentation_id, slide_number, text")
+      return Envelope.failure(.invalidArgs, "Invalid arguments. Required: presentation_id, slide_number, text")
     }
 
     guard let pres = presentations[input.presentation_id] else {
-      return jsonError("Presentation not found: \(input.presentation_id)")
+      return Envelope.failure(.notFound, "Presentation not found: \(input.presentation_id)")
     }
 
     guard input.slide_number >= 1 && input.slide_number <= pres.slides.count else {
-      return jsonError(
+      return Envelope.failure(
+        .invalidArgs,
         "Invalid slide number: \(input.slide_number). Presentation has \(pres.slides.count) slides."
       )
     }
@@ -243,15 +244,18 @@ struct AddImageTool {
     guard let data = args.data(using: .utf8),
       let input = try? JSONDecoder().decode(Args.self, from: data)
     else {
-      return jsonError("Invalid arguments. Required: presentation_id, slide_number, path")
+      return Envelope.failure(.invalidArgs, "Invalid arguments. Required: presentation_id, slide_number, path")
     }
 
     guard let pres = presentations[input.presentation_id] else {
-      return jsonError("Presentation not found: \(input.presentation_id)")
+      return Envelope.failure(.notFound, "Presentation not found: \(input.presentation_id)")
     }
 
     guard input.slide_number >= 1 && input.slide_number <= pres.slides.count else {
-      return jsonError("Invalid slide number: \(input.slide_number)")
+      return Envelope.failure(
+        .invalidArgs,
+        "Invalid slide number: \(input.slide_number). Presentation has \(pres.slides.count) slides."
+      )
     }
 
     // Validate path
@@ -259,17 +263,18 @@ struct AddImageTool {
     let absolutePath: String
     switch pathResult {
     case .success(let p): absolutePath = p
-    case .failure(let msg): return jsonError(msg)
+    case .failure(let msg): return Envelope.failure(.invalidArgs, msg)
     }
 
     guard FileManager.default.fileExists(atPath: absolutePath) else {
-      return jsonError("Image file not found: \(input.path)")
+      return Envelope.failure(.notFound, "Image file not found: \(input.path)")
     }
 
     let ext = (absolutePath as NSString).pathExtension.lowercased()
     let validExts = ["png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif", "svg"]
     guard validExts.contains(ext) else {
-      return jsonError(
+      return Envelope.failure(
+        .invalidArgs,
         "Unsupported image format: \(ext). Supported: \(validExts.joined(separator: ", "))")
     }
 
@@ -325,15 +330,18 @@ struct AddShapeTool {
     guard let data = args.data(using: .utf8),
       let input = try? JSONDecoder().decode(Args.self, from: data)
     else {
-      return jsonError("Invalid arguments. Required: presentation_id, slide_number, shape_type")
+      return Envelope.failure(.invalidArgs, "Invalid arguments. Required: presentation_id, slide_number, shape_type")
     }
 
     guard let pres = presentations[input.presentation_id] else {
-      return jsonError("Presentation not found: \(input.presentation_id)")
+      return Envelope.failure(.notFound, "Presentation not found: \(input.presentation_id)")
     }
 
     guard input.slide_number >= 1 && input.slide_number <= pres.slides.count else {
-      return jsonError("Invalid slide number: \(input.slide_number)")
+      return Envelope.failure(
+        .invalidArgs,
+        "Invalid slide number: \(input.slide_number). Presentation has \(pres.slides.count) slides."
+      )
     }
 
     guard let shapeType = ShapeType(rawValue: input.shape_type) else {
@@ -342,7 +350,8 @@ struct AddShapeTool {
         "star4", "star5", "star6", "right_arrow", "left_arrow", "up_arrow", "down_arrow", "heart",
         "cloud", "lightning", "line", "parallelogram", "trapezoid",
       ]
-      return jsonError(
+      return Envelope.failure(
+        .invalidArgs,
         "Invalid shape type: \(input.shape_type). Valid: \(validTypes.joined(separator: ", "))")
     }
 
@@ -406,20 +415,24 @@ struct AddTableTool {
     guard let data = args.data(using: .utf8),
       let input = try? JSONDecoder().decode(Args.self, from: data)
     else {
-      return jsonError(
+      return Envelope.failure(
+        .invalidArgs,
         "Invalid arguments. Required: presentation_id, slide_number, rows (2D array)")
     }
 
     guard let pres = presentations[input.presentation_id] else {
-      return jsonError("Presentation not found: \(input.presentation_id)")
+      return Envelope.failure(.notFound, "Presentation not found: \(input.presentation_id)")
     }
 
     guard input.slide_number >= 1 && input.slide_number <= pres.slides.count else {
-      return jsonError("Invalid slide number: \(input.slide_number)")
+      return Envelope.failure(
+        .invalidArgs,
+        "Invalid slide number: \(input.slide_number). Presentation has \(pres.slides.count) slides."
+      )
     }
 
     guard !input.rows.isEmpty else {
-      return jsonError("Table must have at least one row")
+      return Envelope.failure(.invalidArgs, "Table must have at least one row")
     }
 
     let slide = pres.slides[input.slide_number - 1]
@@ -487,30 +500,35 @@ struct AddChartTool {
     guard let data = args.data(using: .utf8),
       let input = try? JSONDecoder().decode(Args.self, from: data)
     else {
-      return jsonError(
+      return Envelope.failure(
+        .invalidArgs,
         "Invalid arguments. Required: presentation_id, slide_number, chart_type, categories, series"
       )
     }
 
     guard let pres = presentations[input.presentation_id] else {
-      return jsonError("Presentation not found: \(input.presentation_id)")
+      return Envelope.failure(.notFound, "Presentation not found: \(input.presentation_id)")
     }
 
     guard input.slide_number >= 1 && input.slide_number <= pres.slides.count else {
-      return jsonError("Invalid slide number: \(input.slide_number)")
+      return Envelope.failure(
+        .invalidArgs,
+        "Invalid slide number: \(input.slide_number). Presentation has \(pres.slides.count) slides."
+      )
     }
 
     guard let chartType = ChartType(rawValue: input.chart_type) else {
-      return jsonError(
+      return Envelope.failure(
+        .invalidArgs,
         "Invalid chart type: \(input.chart_type). Valid: bar, column, line, pie, doughnut")
     }
 
     guard !input.series.isEmpty else {
-      return jsonError("Chart must have at least one data series")
+      return Envelope.failure(.invalidArgs, "Chart must have at least one data series")
     }
 
     guard !input.categories.isEmpty else {
-      return jsonError("Chart must have at least one category")
+      return Envelope.failure(.invalidArgs, "Chart must have at least one category")
     }
 
     let slide = pres.slides[input.slide_number - 1]
@@ -565,17 +583,21 @@ struct SetSlideBackgroundTool {
     guard let data = args.data(using: .utf8),
       let input = try? JSONDecoder().decode(Args.self, from: data)
     else {
-      return jsonError(
+      return Envelope.failure(
+        .invalidArgs,
         "Invalid arguments. Required: presentation_id, slide_number, and either color or gradient_color1+gradient_color2"
       )
     }
 
     guard let pres = presentations[input.presentation_id] else {
-      return jsonError("Presentation not found: \(input.presentation_id)")
+      return Envelope.failure(.notFound, "Presentation not found: \(input.presentation_id)")
     }
 
     guard input.slide_number >= 1 && input.slide_number <= pres.slides.count else {
-      return jsonError("Invalid slide number: \(input.slide_number)")
+      return Envelope.failure(
+        .invalidArgs,
+        "Invalid slide number: \(input.slide_number). Presentation has \(pres.slides.count) slides."
+      )
     }
 
     let slide = pres.slides[input.slide_number - 1]
@@ -586,7 +608,8 @@ struct SetSlideBackgroundTool {
       slide.background = SlideBackground(
         type: .gradient(color1: c1, color2: c2, angle: input.gradient_angle ?? 270))
     } else {
-      return jsonError(
+      return Envelope.failure(
+        .invalidArgs,
         "Provide either 'color' for solid background or 'gradient_color1' and 'gradient_color2' for gradient"
       )
     }
@@ -613,15 +636,16 @@ struct DeleteSlideTool {
     guard let data = args.data(using: .utf8),
       let input = try? JSONDecoder().decode(Args.self, from: data)
     else {
-      return jsonError("Invalid arguments. Required: presentation_id, slide_number")
+      return Envelope.failure(.invalidArgs, "Invalid arguments. Required: presentation_id, slide_number")
     }
 
     guard let pres = presentations[input.presentation_id] else {
-      return jsonError("Presentation not found: \(input.presentation_id)")
+      return Envelope.failure(.notFound, "Presentation not found: \(input.presentation_id)")
     }
 
     guard input.slide_number >= 1 && input.slide_number <= pres.slides.count else {
-      return jsonError(
+      return Envelope.failure(
+        .invalidArgs,
         "Invalid slide number: \(input.slide_number). Presentation has \(pres.slides.count) slides."
       )
     }
@@ -649,18 +673,18 @@ struct ReadPresentationTool {
     guard let data = args.data(using: .utf8),
       let input = try? JSONDecoder().decode(Args.self, from: data)
     else {
-      return jsonError("Invalid arguments. Required: path (string)")
+      return Envelope.failure(.invalidArgs, "Invalid arguments. Required: path (string)")
     }
 
     let pathResult = validatePath(input.path, workingDirectory: input._context?.working_directory)
     let absolutePath: String
     switch pathResult {
     case .success(let p): absolutePath = p
-    case .failure(let msg): return jsonError(msg)
+    case .failure(let msg): return Envelope.failure(.invalidArgs, msg)
     }
 
     guard FileManager.default.fileExists(atPath: absolutePath) else {
-      return jsonError("File not found: \(input.path)")
+      return Envelope.failure(.notFound, "File not found: \(input.path)")
     }
 
     do {
@@ -674,7 +698,7 @@ struct ReadPresentationTool {
         "source_path": absolutePath,
       ])
     } catch {
-      return jsonError("Failed to read PPTX: \(error)")
+      return Envelope.failure(.executionError, "Failed to read PPTX: \(error)")
     }
   }
 }
@@ -694,11 +718,11 @@ struct GetPresentationInfoTool {
     guard let data = args.data(using: .utf8),
       let input = try? JSONDecoder().decode(Args.self, from: data)
     else {
-      return jsonError("Invalid arguments. Required: presentation_id")
+      return Envelope.failure(.invalidArgs, "Invalid arguments. Required: presentation_id")
     }
 
     guard let pres = presentations[input.presentation_id] else {
-      return jsonError("Presentation not found: \(input.presentation_id)")
+      return Envelope.failure(.notFound, "Presentation not found: \(input.presentation_id)")
     }
 
     let widthInches = Double(pres.slideWidth) / Double(Units.emuPerInch)
@@ -799,18 +823,18 @@ struct SavePresentationTool {
     guard let data = args.data(using: .utf8),
       let input = try? JSONDecoder().decode(Args.self, from: data)
     else {
-      return jsonError("Invalid arguments. Required: presentation_id, path")
+      return Envelope.failure(.invalidArgs, "Invalid arguments. Required: presentation_id, path")
     }
 
     guard let pres = presentations[input.presentation_id] else {
-      return jsonError("Presentation not found: \(input.presentation_id)")
+      return Envelope.failure(.notFound, "Presentation not found: \(input.presentation_id)")
     }
 
     let pathResult = validatePath(input.path, workingDirectory: input._context?.working_directory)
     let absolutePath: String
     switch pathResult {
     case .success(let p): absolutePath = p
-    case .failure(let msg): return jsonError(msg)
+    case .failure(let msg): return Envelope.failure(.invalidArgs, msg)
     }
 
     // Ensure path ends with .pptx
@@ -824,7 +848,7 @@ struct SavePresentationTool {
         "presentation_id": pres.id,
       ])
     } catch {
-      return jsonError("Failed to save presentation: \(error)")
+      return Envelope.failure(.executionError, "Failed to save presentation: \(error)")
     }
   }
 }

@@ -1,12 +1,12 @@
 ---
 name: osaurus-pptx
-description: Create PowerPoint (.pptx) presentations from scratch using the Osaurus PPTX plugin. Use when the user asks to build, generate, or create a PowerPoint presentation, slide deck, or .pptx file.
+description: Create PowerPoint (.pptx) presentations from scratch using the PPTX plugin. Use when the user asks to build, generate, or create a PowerPoint presentation, slide deck, or .pptx file.
 metadata:
   author: osaurus
   version: "0.1.0"
 ---
 
-# Osaurus PPTX
+# PPTX
 
 Create PowerPoint (.pptx) presentations from scratch. This plugin is creation-only — treat every presentation as a fresh build.
 
