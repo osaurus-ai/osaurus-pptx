@@ -1,4 +1,6 @@
 import Foundation
+import OsaurusPluginABI
+import OsaurusPluginKit
 
 // MARK: - Manifest
 
@@ -250,32 +252,6 @@ let pptxManifestJSON = """
   }
   """
 
-// MARK: - C ABI surface
-
-// Opaque context
-private typealias osr_plugin_ctx_t = UnsafeMutableRawPointer
-
-// Function pointers
-private typealias osr_free_string_t = @convention(c) (UnsafePointer<CChar>?) -> Void
-private typealias osr_init_t = @convention(c) () -> osr_plugin_ctx_t?
-private typealias osr_destroy_t = @convention(c) (osr_plugin_ctx_t?) -> Void
-private typealias osr_get_manifest_t = @convention(c) (osr_plugin_ctx_t?) -> UnsafePointer<CChar>?
-private typealias osr_invoke_t =
-  @convention(c) (
-    osr_plugin_ctx_t?,
-    UnsafePointer<CChar>?,  // type
-    UnsafePointer<CChar>?,  // id
-    UnsafePointer<CChar>?  // payload
-  ) -> UnsafePointer<CChar>?
-
-private struct osr_plugin_api {
-  var free_string: osr_free_string_t?
-  var `init`: osr_init_t?
-  var destroy: osr_destroy_t?
-  var get_manifest: osr_get_manifest_t?
-  var invoke: osr_invoke_t?
-}
-
 // MARK: - Plugin Context
 
 private class PluginContext: @unchecked Sendable {
@@ -296,35 +272,22 @@ private class PluginContext: @unchecked Sendable {
   let savePresentation = SavePresentationTool()
 }
 
-// Helper to return C strings
-private func makeCString(_ s: String) -> UnsafePointer<CChar>? {
-  return UnsafePointer(strdup(s))
-}
-
 // MARK: - API Implementation
 
-nonisolated(unsafe) private var api: osr_plugin_api = {
-  var api = osr_plugin_api()
-
-  api.free_string = { ptr in
-    if let p = ptr { free(UnsafeMutableRawPointer(mutating: p)) }
-  }
-
-  api.`init` = {
+nonisolated(unsafe) var pluginAPI = PluginEntry.makeAPI(
+  version: 0,
+  init: {
     let ctx = PluginContext()
     return Unmanaged.passRetained(ctx).toOpaque()
-  }
-
-  api.destroy = { ctxPtr in
+  },
+  destroy: { ctxPtr in
     guard let ctxPtr = ctxPtr else { return }
     Unmanaged<PluginContext>.fromOpaque(ctxPtr).release()
-  }
-
-  api.get_manifest = { _ in
-    return makeCString(pptxManifestJSON)
-  }
-
-  api.invoke = { ctxPtr, typePtr, idPtr, payloadPtr in
+  },
+  getManifest: { _ in
+    osrMakeCString(pptxManifestJSON)
+  },
+  invoke: { ctxPtr, typePtr, idPtr, payloadPtr in
     guard let ctxPtr = ctxPtr,
       let typePtr = typePtr,
       let idPtr = idPtr,
@@ -337,7 +300,7 @@ nonisolated(unsafe) private var api: osr_plugin_api = {
     let payload = String(cString: payloadPtr)
 
     guard type == "tool" else {
-      return makeCString(Envelope.failure(.invalidArgs, "Unknown capability type: \(type)"))
+      return osrMakeCString(Envelope.failure(.invalidArgs, "Unknown capability type: \(type)"))
     }
 
     let result: String
@@ -370,13 +333,11 @@ nonisolated(unsafe) private var api: osr_plugin_api = {
       result = Envelope.failure(.notFound, "Unknown tool: \(id)")
     }
 
-    return makeCString(result)
+    return osrMakeCString(result)
   }
-
-  return api
-}()
+)
 
 @_cdecl("osaurus_plugin_entry")
 public func osaurus_plugin_entry() -> UnsafeRawPointer? {
-  return UnsafeRawPointer(&api)
+  PluginEntry.enterV1(api: &pluginAPI)
 }

@@ -1,4 +1,5 @@
 import Foundation
+import OsaurusPluginKit
 import Testing
 
 @testable import osaurus_pptx
@@ -65,7 +66,7 @@ struct EnvelopeTests {
     let kinds: [(Envelope.Kind, Bool)] = [
       (.invalidArgs, false),
       (.executionError, true),
-      (.unavailable, true),
+      (.permissionDenied, false),
       (.timeout, true),
       (.notFound, false),
     ]
@@ -93,9 +94,9 @@ struct EnvelopeTests {
     #expect(obj?["message"] as? String == "line1\nline2 \"quoted\" \\slash\t tab")
   }
 
-  @Test("successRaw wraps payload as canonical success")
+  @Test("success(raw:) wraps payload as canonical success")
   func successRawWraps() {
-    let obj = parse(Envelope.successRaw("{\"value\":1}"))
+    let obj = parse(Envelope.success(raw: "{\"value\":1}"))
     #expect(obj?["ok"] as? Bool == true)
     #expect((obj?["result"] as? [String: Any])?["value"] as? Int == 1)
   }

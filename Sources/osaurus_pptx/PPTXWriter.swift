@@ -1,4 +1,5 @@
 import Foundation
+import OsaurusPluginKit
 
 // MARK: - PPTX Writer
 
@@ -206,12 +207,7 @@ enum PPTXWriter {
       throw PPTXError.zipFailed(zipResult.output)
     }
 
-    if FileManager.default.fileExists(atPath: outputPath) {
-      _ = try FileManager.default.replaceItemAt(
-        URL(fileURLWithPath: outputPath), withItemAt: URL(fileURLWithPath: packagePath))
-    } else {
-      try FileManager.default.moveItem(atPath: packagePath, toPath: outputPath)
-    }
+    try PathSafety.atomicReplace(at: outputPath, withItemAt: packagePath)
 
     return result
   }

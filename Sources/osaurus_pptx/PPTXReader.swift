@@ -1,4 +1,5 @@
 import Foundation
+import OsaurusPluginKit
 
 // MARK: - PPTX Reader
 
@@ -131,8 +132,8 @@ enum PPTXReader {
     } else {
       combined = "\(baseDir)/\(target)"
     }
-    let resolved = canonicalizePath(combined)
-    guard isContained(resolved, in: packageRoot) else {
+    let resolved = PathSafety.canonicalize(combined)
+    guard PathSafety.isContained(resolved, in: packageRoot) else {
       throw PPTXError.invalidFile("Relationship target escapes package: \(target)")
     }
     return resolved

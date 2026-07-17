@@ -1,4 +1,5 @@
 import Foundation
+import OsaurusPluginKit
 
 // MARK: - Shared Decodable Types
 
@@ -14,33 +15,6 @@ enum PathResult {
 }
 
 // MARK: - Path Security
-
-/// Canonical, component-aware containment check. Resolves symlinks on both
-/// sides so lexical tricks (`..`, sibling prefixes, symlinked directories)
-/// cannot escape the root.
-func isContained(_ path: String, in root: String) -> Bool {
-  let p = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
-  let r = URL(fileURLWithPath: root).standardizedFileURL.resolvingSymlinksInPath().path
-  return p == r || p.hasPrefix(r.hasSuffix("/") ? r : r + "/")
-}
-
-/// Canonicalize a path that may not exist yet: symlinks are resolved on the
-/// deepest existing ancestor and the non-existing tail is re-appended.
-func canonicalizePath(_ path: String) -> String {
-  let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
-  var existing = standardized
-  var tail: [String] = []
-  while !FileManager.default.fileExists(atPath: existing), existing != "/" {
-    let url = URL(fileURLWithPath: existing)
-    tail.append(url.lastPathComponent)
-    existing = url.deletingLastPathComponent().path
-  }
-  var resolved = URL(fileURLWithPath: existing).resolvingSymlinksInPath()
-  for component in tail.reversed() {
-    resolved.appendPathComponent(component)
-  }
-  return resolved.path
-}
 
 func validatePath(_ path: String, workingDirectory: String?) -> PathResult {
   guard let workDir = workingDirectory else {
@@ -58,9 +32,10 @@ func validatePath(_ path: String, workingDirectory: String?) -> PathResult {
     absolutePath = "\(workDir)/\(path)"
   }
 
-  // Resolve and validate
-  let resolved = canonicalizePath(absolutePath)
-  guard isContained(resolved, in: workDir) else {
+  // Resolve and validate (canonical, component-aware containment from the
+  // SDK: symlinks resolved on the deepest existing ancestor).
+  let resolved = PathSafety.canonicalize(absolutePath)
+  guard PathSafety.isContained(resolved, in: workDir) else {
     return .failure("Path is outside the working directory")
   }
 
