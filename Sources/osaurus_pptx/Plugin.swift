@@ -7,7 +7,7 @@ let pptxManifestJSON = """
   {
     "plugin_id": "osaurus.pptx",
     "name": "PPTX",
-    "version": "0.1.0",
+    "version": "1.0.4",
     "description": "Create, modify, and export PowerPoint presentations. Supports text, images, shapes, tables, charts, themes, and more.",
     "license": "MIT",
     "authors": [],
@@ -233,7 +233,7 @@ let pptxManifestJSON = """
         },
         {
           "id": "save_presentation",
-          "description": "Save a presentation as a .pptx file to the workspace.",
+          "description": "Save a presentation as a .pptx file to the workspace. Images whose source files are missing or unreadable are dropped from the deck and reported in the skipped_images field of the result.",
           "parameters": {
             "type": "object",
             "properties": {
