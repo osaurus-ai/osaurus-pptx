@@ -275,7 +275,7 @@ private class PluginContext: @unchecked Sendable {
 // MARK: - API Implementation
 
 nonisolated(unsafe) var pluginAPI = PluginEntry.makeAPI(
-  version: 0,
+  version: OsrABIVersion.v2,
   init: {
     let ctx = PluginContext()
     return Unmanaged.passRetained(ctx).toOpaque()
@@ -336,6 +336,13 @@ nonisolated(unsafe) var pluginAPI = PluginEntry.makeAPI(
     return osrMakeCString(result)
   }
 )
+
+/// v2 entry point: the host injects its API table here first. Captured into
+/// `HostBridge.shared`; old hosts fall back to the v1 symbol below.
+@_cdecl("osaurus_plugin_entry_v2")
+public func osaurus_plugin_entry_v2(_ host: UnsafeRawPointer?) -> UnsafeRawPointer? {
+  PluginEntry.enterV2(host, api: &pluginAPI)
+}
 
 @_cdecl("osaurus_plugin_entry")
 public func osaurus_plugin_entry() -> UnsafeRawPointer? {
