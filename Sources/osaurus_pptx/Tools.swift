@@ -15,6 +15,33 @@ enum PathResult {
 
 // MARK: - Path Security
 
+/// Canonical, component-aware containment check. Resolves symlinks on both
+/// sides so lexical tricks (`..`, sibling prefixes, symlinked directories)
+/// cannot escape the root.
+func isContained(_ path: String, in root: String) -> Bool {
+  let p = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
+  let r = URL(fileURLWithPath: root).standardizedFileURL.resolvingSymlinksInPath().path
+  return p == r || p.hasPrefix(r.hasSuffix("/") ? r : r + "/")
+}
+
+/// Canonicalize a path that may not exist yet: symlinks are resolved on the
+/// deepest existing ancestor and the non-existing tail is re-appended.
+func canonicalizePath(_ path: String) -> String {
+  let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+  var existing = standardized
+  var tail: [String] = []
+  while !FileManager.default.fileExists(atPath: existing), existing != "/" {
+    let url = URL(fileURLWithPath: existing)
+    tail.append(url.lastPathComponent)
+    existing = url.deletingLastPathComponent().path
+  }
+  var resolved = URL(fileURLWithPath: existing).resolvingSymlinksInPath()
+  for component in tail.reversed() {
+    resolved.appendPathComponent(component)
+  }
+  return resolved.path
+}
+
 func validatePath(_ path: String, workingDirectory: String?) -> PathResult {
   guard let workDir = workingDirectory else {
     // If no working directory context, only allow absolute paths
@@ -32,12 +59,41 @@ func validatePath(_ path: String, workingDirectory: String?) -> PathResult {
   }
 
   // Resolve and validate
-  let resolved = URL(fileURLWithPath: absolutePath).standardized.path
-  guard resolved.hasPrefix(workDir) else {
+  let resolved = canonicalizePath(absolutePath)
+  guard isContained(resolved, in: workDir) else {
     return .failure("Path is outside the working directory")
   }
 
   return .success(resolved)
+}
+
+// MARK: - Numeric Validation
+
+/// Returns an error message when the value is non-finite or outside the sane
+/// range, nil when acceptable. Values reaching EMU conversion trap in
+/// Int(Double) if NaN/infinite/huge, so these must be rejected up front.
+func firstNumericError(_ checks: [(value: Double?, name: String, min: Double, max: Double)])
+  -> String?
+{
+  for check in checks {
+    guard let v = check.value else { continue }
+    if !v.isFinite {
+      return "\(check.name) must be a finite number"
+    }
+    if v < check.min || v > check.max {
+      return "\(check.name) must be between \(check.min) and \(check.max)"
+    }
+  }
+  return nil
+}
+
+// MARK: - Error Envelope Helper
+
+func failureEnvelope(_ context: String, _ error: Error) -> String {
+  if error is ProcessTimeoutError {
+    return Envelope.failure(.timeout, "\(context): \(error)")
+  }
+  return Envelope.failure(.executionError, "\(context): \(error)")
 }
 
 // MARK: - Tool: create_presentation
@@ -69,17 +125,30 @@ struct CreatePresentationTool {
       default:
         // Try to parse "WxH" format
         let parts = size.split(separator: "x")
-        if parts.count == 2,
+        guard parts.count == 2,
           let w = Double(parts[0]),
           let h = Double(parts[1])
-        {
-          slideSize = .custom(width: w, height: h)
-        } else {
-          slideSize = .widescreen
+        else {
+          return Envelope.failure(
+            .invalidArgs,
+            "Invalid size: \(size). Valid: '16:9', '4:3', or 'WxH' in inches (e.g. '10x7.5')")
         }
+        if let err = firstNumericError([
+          (w, "size width", 1, 200), (h, "size height", 1, 200),
+        ]) {
+          return Envelope.failure(.invalidArgs, err)
+        }
+        slideSize = .custom(width: w, height: h)
       }
     } else {
       slideSize = .widescreen
+    }
+
+    let validThemes = ["modern", "corporate", "creative", "minimal", "dark"]
+    if let themeName = input.theme, !validThemes.contains(themeName.lowercased()) {
+      return Envelope.failure(
+        .invalidArgs,
+        "Invalid theme: \(themeName). Valid: \(validThemes.joined(separator: ", "))")
     }
 
     let theme = ThemePresets.named(input.theme ?? "modern")
@@ -125,7 +194,13 @@ struct AddSlideTool {
 
     let layoutType: SlideLayoutType
     if let layout = input.layout {
-      layoutType = SlideLayoutType(rawValue: layout) ?? .blank
+      guard let parsed = SlideLayoutType(rawValue: layout) else {
+        return Envelope.failure(
+          .invalidArgs,
+          "Invalid layout: \(layout). Valid: blank, title, title_content, section_header, two_content, title_only"
+        )
+      }
+      layoutType = parsed
     } else {
       layoutType = .blank
     }
@@ -187,6 +262,29 @@ struct AddTextTool {
         .invalidArgs,
         "Invalid slide number: \(input.slide_number). Presentation has \(pres.slides.count) slides."
       )
+    }
+
+    if let err = firstNumericError([
+      (input.x, "x", -1000, 1000),
+      (input.y, "y", -1000, 1000),
+      (input.width, "width", 0, 1000),
+      (input.height, "height", 0, 1000),
+      (input.font_size, "font_size", 1, 1000),
+      (input.line_spacing, "line_spacing", 0, 1000),
+      (input.rotation, "rotation", -3600, 3600),
+    ]) {
+      return Envelope.failure(.invalidArgs, err)
+    }
+
+    let validAlignments = ["left", "l", "center", "ctr", "right", "r", "justify", "just"]
+    if let a = input.alignment, !validAlignments.contains(a.lowercased()) {
+      return Envelope.failure(
+        .invalidArgs, "Invalid alignment: \(a). Valid: left, center, right, justify")
+    }
+    let validVerticalAlignments = ["top", "t", "middle", "center", "ctr", "bottom", "b"]
+    if let v = input.vertical_alignment, !validVerticalAlignments.contains(v.lowercased()) {
+      return Envelope.failure(
+        .invalidArgs, "Invalid vertical_alignment: \(v). Valid: top, middle, bottom")
     }
 
     let slide = pres.slides[input.slide_number - 1]
@@ -256,6 +354,15 @@ struct AddImageTool {
         .invalidArgs,
         "Invalid slide number: \(input.slide_number). Presentation has \(pres.slides.count) slides."
       )
+    }
+
+    if let err = firstNumericError([
+      (input.x, "x", -1000, 1000),
+      (input.y, "y", -1000, 1000),
+      (input.width, "width", 0, 1000),
+      (input.height, "height", 0, 1000),
+    ]) {
+      return Envelope.failure(.invalidArgs, err)
     }
 
     // Validate path
@@ -355,6 +462,18 @@ struct AddShapeTool {
         "Invalid shape type: \(input.shape_type). Valid: \(validTypes.joined(separator: ", "))")
     }
 
+    if let err = firstNumericError([
+      (input.x, "x", -1000, 1000),
+      (input.y, "y", -1000, 1000),
+      (input.width, "width", 0, 1000),
+      (input.height, "height", 0, 1000),
+      (input.border_width, "border_width", 0, 100),
+      (input.text_size, "text_size", 1, 1000),
+      (input.rotation, "rotation", -3600, 3600),
+    ]) {
+      return Envelope.failure(.invalidArgs, err)
+    }
+
     let slide = pres.slides[input.slide_number - 1]
     let position = ElementPosition(
       x: input.x ?? 3.0,
@@ -433,6 +552,20 @@ struct AddTableTool {
 
     guard !input.rows.isEmpty else {
       return Envelope.failure(.invalidArgs, "Table must have at least one row")
+    }
+
+    var numericChecks: [(value: Double?, name: String, min: Double, max: Double)] = [
+      (input.x, "x", -1000, 1000),
+      (input.y, "y", -1000, 1000),
+      (input.width, "width", 0, 1000),
+      (input.height, "height", 0, 1000),
+      (input.font_size, "font_size", 1, 1000),
+    ]
+    for (idx, width) in (input.column_widths ?? []).enumerated() {
+      numericChecks.append((width, "column_widths[\(idx)]", 0, 1000))
+    }
+    if let err = firstNumericError(numericChecks) {
+      return Envelope.failure(.invalidArgs, err)
     }
 
     let slide = pres.slides[input.slide_number - 1]
@@ -531,6 +664,22 @@ struct AddChartTool {
       return Envelope.failure(.invalidArgs, "Chart must have at least one category")
     }
 
+    if let err = firstNumericError([
+      (input.x, "x", -1000, 1000),
+      (input.y, "y", -1000, 1000),
+      (input.width, "width", 0, 1000),
+      (input.height, "height", 0, 1000),
+    ]) {
+      return Envelope.failure(.invalidArgs, err)
+    }
+    for series in input.series {
+      if let err = firstNumericError(
+        series.values.map { ($0 as Double?, "series \"\(series.name)\" value", -1e12, 1e12) })
+      {
+        return Envelope.failure(.invalidArgs, err)
+      }
+    }
+
     let slide = pres.slides[input.slide_number - 1]
     let position = ElementPosition(
       x: input.x ?? 1.5,
@@ -598,6 +747,12 @@ struct SetSlideBackgroundTool {
         .invalidArgs,
         "Invalid slide number: \(input.slide_number). Presentation has \(pres.slides.count) slides."
       )
+    }
+
+    if let err = firstNumericError([
+      (input.gradient_angle, "gradient_angle", -3600, 3600)
+    ]) {
+      return Envelope.failure(.invalidArgs, err)
     }
 
     let slide = pres.slides[input.slide_number - 1]
@@ -698,7 +853,7 @@ struct ReadPresentationTool {
         "source_path": absolutePath,
       ])
     } catch {
-      return Envelope.failure(.executionError, "Failed to read PPTX: \(error)")
+      return failureEnvelope("Failed to read PPTX", error)
     }
   }
 }
@@ -841,14 +996,15 @@ struct SavePresentationTool {
     let finalPath = absolutePath.hasSuffix(".pptx") ? absolutePath : "\(absolutePath).pptx"
 
     do {
-      try PPTXWriter.write(presentation: pres, to: finalPath)
+      let writeResult = try PPTXWriter.write(presentation: pres, to: finalPath)
       return jsonSuccess([
         "path": finalPath,
         "slide_count": pres.slides.count,
         "presentation_id": pres.id,
+        "skipped_images": writeResult.skippedImages,
       ])
     } catch {
-      return Envelope.failure(.executionError, "Failed to save presentation: \(error)")
+      return failureEnvelope("Failed to save presentation", error)
     }
   }
 }
