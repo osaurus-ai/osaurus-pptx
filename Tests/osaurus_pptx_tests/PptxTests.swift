@@ -63,9 +63,10 @@ struct EnvelopeTests {
   @Test("failure round-trips to canonical shape with default retryable")
   func failureRoundTrip() {
     let kinds: [(Envelope.Kind, Bool)] = [
-      (.invalidArgs, true),
+      (.invalidArgs, false),
       (.executionError, true),
       (.unavailable, true),
+      (.timeout, true),
       (.notFound, false),
     ]
 
