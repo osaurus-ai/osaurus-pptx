@@ -156,7 +156,18 @@ func srgbClrXML(_ hex: String, alpha: Double? = nil) -> String {
 
 // MARK: - Process Runner
 
-func runProcess(_ executable: String, arguments: [String], currentDirectory: String? = nil) throws
+struct ProcessTimeoutError: Error, CustomStringConvertible {
+  let executable: String
+  let timeout: TimeInterval
+  var description: String {
+    "\((executable as NSString).lastPathComponent) timed out after \(Int(timeout))s"
+  }
+}
+
+func runProcess(
+  _ executable: String, arguments: [String], currentDirectory: String? = nil,
+  timeout: TimeInterval = 30, outputLimit: Int = 5 * 1024 * 1024
+) throws
   -> (output: String, exitCode: Int32)
 {
   let process = Process()
@@ -170,11 +181,43 @@ func runProcess(_ executable: String, arguments: [String], currentDirectory: Str
   process.standardOutput = pipe
   process.standardError = pipe
 
-  try process.run()
-  process.waitUntilExit()
+  // Drain output concurrently (capped) so large output cannot deadlock the pipe.
+  let outputLock = NSLock()
+  nonisolated(unsafe) var outputData = Data()
+  pipe.fileHandleForReading.readabilityHandler = { handle in
+    let chunk = handle.availableData
+    guard !chunk.isEmpty else { return }
+    outputLock.lock()
+    if outputData.count < outputLimit {
+      outputData.append(chunk.prefix(outputLimit - outputData.count))
+    }
+    outputLock.unlock()
+  }
 
-  let data = pipe.fileHandleForReading.readDataToEndOfFile()
-  let output = String(data: data, encoding: .utf8) ?? ""
+  let finished = DispatchSemaphore(value: 0)
+  process.terminationHandler = { _ in finished.signal() }
+
+  try process.run()
+
+  var timedOut = false
+  if finished.wait(timeout: .now() + timeout) == .timedOut {
+    timedOut = true
+    process.terminate()
+    if finished.wait(timeout: .now() + 2) == .timedOut {
+      kill(process.processIdentifier, SIGKILL)
+      _ = finished.wait(timeout: .now() + 2)
+    }
+  }
+  process.waitUntilExit()
+  pipe.fileHandleForReading.readabilityHandler = nil
+
+  if timedOut {
+    throw ProcessTimeoutError(executable: executable, timeout: timeout)
+  }
+
+  outputLock.lock()
+  let output = String(data: outputData, encoding: .utf8) ?? ""
+  outputLock.unlock()
   return (output, process.terminationStatus)
 }
 
