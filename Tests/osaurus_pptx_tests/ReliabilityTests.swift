@@ -564,6 +564,6 @@ struct ManifestVersionTests {
   func versionMatchesRelease() throws {
     let data = pptxManifestJSON.data(using: .utf8)!
     let manifest = try JSONSerialization.jsonObject(with: data) as! [String: Any]
-    #expect(manifest["version"] as? String == "1.0.4")
+    #expect(manifest["version"] as? String == "1.1.0")
   }
 }

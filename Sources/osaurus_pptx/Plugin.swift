@@ -9,7 +9,7 @@ let pptxManifestJSON = """
   {
     "plugin_id": "osaurus.pptx",
     "name": "PPTX",
-    "version": "1.0.4",
+    "version": "1.1.0",
     "description": "Create, modify, and export PowerPoint presentations. Supports text, images, shapes, tables, charts, themes, and more.",
     "license": "MIT",
     "authors": [],
