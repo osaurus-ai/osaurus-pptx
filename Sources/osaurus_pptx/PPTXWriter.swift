@@ -1,14 +1,34 @@
 import Foundation
+import OsaurusPluginKit
 
 // MARK: - PPTX Writer
+
+/// Outcome of a successful write, including images that had to be dropped
+/// because their source data was missing or unreadable.
+struct PPTXWriteResult {
+  var skippedImages: [String] = []
+}
 
 enum PPTXWriter {
 
   /// Write a presentation to a .pptx file at the given path
-  static func write(presentation: Presentation, to outputPath: String) throws {
+  @discardableResult
+  static func write(presentation: Presentation, to outputPath: String) throws -> PPTXWriteResult {
+    var isDirectory: ObjCBool = false
+    if FileManager.default.fileExists(atPath: outputPath, isDirectory: &isDirectory),
+      isDirectory.boolValue
+    {
+      throw PPTXError.invalidDestination("Destination is an existing directory: \(outputPath)")
+    }
+
+    try validateNumericValues(presentation: presentation)
+
     let tempDir = NSTemporaryDirectory() + "osaurus_pptx_\(UUID().uuidString)"
+    let outputDir = (outputPath as NSString).deletingLastPathComponent
+    let packagePath = "\(outputDir)/.osaurus-pptx-\(UUID().uuidString).tmp"
     defer {
       try? FileManager.default.removeItem(atPath: tempDir)
+      try? FileManager.default.removeItem(atPath: packagePath)
     }
 
     // Create directory structure
@@ -26,23 +46,33 @@ enum PPTXWriter {
     try createDirectoryIfNeeded("\(tempDir)/docProps")
 
     // Collect media and chart info
-    var imageFiles: [(sourcePath: String, targetName: String, ext: String)] = []
+    var imageFiles: [(data: Data, targetName: String, ext: String)] = []
     var chartFiles: [(chartIndex: Int, xml: String)] = []
     var globalImageIndex = 0
     var globalChartIndex = 0
+    var result = PPTXWriteResult()
 
-    // Pre-process slides to assign relationship IDs and collect media
+    // Pre-process slides to assign relationship IDs and collect media.
+    // Images whose source data is missing or unreadable are dropped (no
+    // dangling relationship is written) and reported in the result.
     for slide in presentation.slides {
       var imageCount = 0
       var chartCount = 0
       for element in slide.elements {
         if let image = element as? ImageElement {
+          guard image.sourcePath.hasPrefix("/"),
+            let data = FileManager.default.contents(atPath: image.sourcePath)
+          else {
+            image.rId = nil
+            result.skippedImages.append(image.sourcePath)
+            continue
+          }
           globalImageIndex += 1
           imageCount += 1
           let ext = image.imageExtension
           let mediaName = "image\(globalImageIndex).\(ext)"
           image.rId = "rIdImg\(imageCount)"
-          imageFiles.append((sourcePath: image.sourcePath, targetName: mediaName, ext: ext))
+          imageFiles.append((data: data, targetName: mediaName, ext: ext))
         } else if let chart = element as? ChartElement {
           globalChartIndex += 1
           chartCount += 1
@@ -68,11 +98,7 @@ enum PPTXWriter {
     // Copy image files
     for imageFile in imageFiles {
       let destPath = "\(tempDir)/ppt/media/\(imageFile.targetName)"
-      if let data = imageFile.sourcePath.starts(with: "/")
-        ? FileManager.default.contents(atPath: imageFile.sourcePath) : nil
-      {
-        try writeData(data, to: destPath)
-      }
+      try writeData(imageFile.data, to: destPath)
     }
 
     // Write chart XML files
@@ -113,11 +139,12 @@ enum PPTXWriter {
           rId: "rId1", type: OOXML.relTypeSlideLayout, target: "../slideLayouts/slideLayout1.xml")
       ]
 
-      // Build image relationships for this slide
+      // Build image relationships for this slide (skipped images have no rId
+      // and get no relationship)
       var slideImageIdx = 0
       var slideChartIdx = 0
       for element in slide.elements {
-        if element is ImageElement {
+        if let image = element as? ImageElement, image.rId != nil {
           slideImageIdx += 1
           let mediaName = imageFiles[imageFileIndex].targetName
           slideRels.append(
@@ -171,16 +198,73 @@ enum PPTXWriter {
     try writeFile(
       generateCorePropsXML(presentation: presentation), to: "\(tempDir)/docProps/core.xml")
 
-    // Package as ZIP
-    // Remove existing file
-    if FileManager.default.fileExists(atPath: outputPath) {
-      try FileManager.default.removeItem(atPath: outputPath)
+    // Package as ZIP into a temp file next to the destination, then replace
+    // atomically. The prior file is never removed before the new package is
+    // fully produced.
+    let zipResult = try runProcess(
+      "/usr/bin/zip", arguments: ["-r", "-q", packagePath, "."], currentDirectory: tempDir)
+    if zipResult.exitCode != 0 {
+      throw PPTXError.zipFailed(zipResult.output)
     }
 
-    let result = try runProcess(
-      "/usr/bin/zip", arguments: ["-r", "-q", outputPath, "."], currentDirectory: tempDir)
-    if result.exitCode != 0 {
-      throw PPTXError.zipFailed(result.output)
+    try PathSafety.atomicReplace(at: outputPath, withItemAt: packagePath)
+
+    return result
+  }
+
+  // MARK: - Numeric Validation
+
+  /// Reject non-finite or absurdly large numeric inputs before they reach
+  /// EMU conversion (Int(Double) traps on NaN/infinity/overflow).
+  private static func validateNumericValues(presentation: Presentation) throws {
+    func check(_ value: Double?, _ name: String, limit: Double = 1e6) throws {
+      guard let v = value else { return }
+      guard v.isFinite, abs(v) <= limit else {
+        throw PPTXError.invalidValue("\(name) is not a finite value in a sane range: \(String(describing: value))")
+      }
+    }
+    func checkPosition(_ position: ElementPosition, _ what: String) throws {
+      try check(position.x, "\(what) x")
+      try check(position.y, "\(what) y")
+      try check(position.width, "\(what) width")
+      try check(position.height, "\(what) height")
+    }
+
+    for slide in presentation.slides {
+      if let bg = slide.background, case .gradient(_, _, let angle) = bg.type {
+        try check(angle, "background gradient angle")
+      }
+      for element in slide.elements {
+        if let text = element as? TextElement {
+          try checkPosition(text.position, "text")
+          try check(text.fontSize, "text font_size")
+          try check(text.lineSpacing, "text line_spacing")
+          try check(text.rotation, "text rotation")
+        } else if let image = element as? ImageElement {
+          try checkPosition(image.position, "image")
+        } else if let shape = element as? ShapeElement {
+          try checkPosition(shape.position, "shape")
+          try check(shape.borderWidth, "shape border_width")
+          try check(shape.textSize, "shape text_size")
+          try check(shape.rotation, "shape rotation")
+        } else if let table = element as? TableElement {
+          try checkPosition(table.position, "table")
+          try check(table.fontSize, "table font_size")
+          for width in table.columnWidths ?? [] {
+            try check(width, "table column width")
+          }
+        } else if let chart = element as? ChartElement {
+          try checkPosition(chart.position, "chart")
+          for series in chart.series {
+            for value in series.values {
+              guard value.isFinite else {
+                throw PPTXError.invalidValue(
+                  "chart series \"\(series.name)\" contains a non-finite value")
+              }
+            }
+          }
+        }
+      }
     }
   }
 
@@ -232,7 +316,7 @@ enum PPTXWriter {
   // MARK: - Content Types
 
   private static func generateContentTypesXML(
-    presentation: Presentation, imageFiles: [(sourcePath: String, targetName: String, ext: String)],
+    presentation: Presentation, imageFiles: [(data: Data, targetName: String, ext: String)],
     chartCount: Int
   ) -> String {
     var overrides = ""
@@ -329,12 +413,16 @@ enum PPTXError: Error, CustomStringConvertible {
   case zipFailed(String)
   case unzipFailed(String)
   case invalidFile(String)
+  case invalidDestination(String)
+  case invalidValue(String)
 
   var description: String {
     switch self {
     case .zipFailed(let msg): return "ZIP packaging failed: \(msg)"
     case .unzipFailed(let msg): return "Unzip failed: \(msg)"
     case .invalidFile(let msg): return "Invalid PPTX file: \(msg)"
+    case .invalidDestination(let msg): return "Invalid destination: \(msg)"
+    case .invalidValue(let msg): return "Invalid value: \(msg)"
     }
   }
 }

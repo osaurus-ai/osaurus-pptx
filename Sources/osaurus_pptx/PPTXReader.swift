@@ -1,4 +1,5 @@
 import Foundation
+import OsaurusPluginKit
 
 // MARK: - PPTX Reader
 
@@ -12,6 +13,10 @@ enum PPTXReader {
     }
 
     try createDirectoryIfNeeded(tempDir)
+
+    // Validate the untrusted archive (entry count, size, ratio, entry paths,
+    // symlinks) before extracting anything.
+    try ZipArchiveGuard.validate(archiveAt: filePath)
 
     // Unzip
     let result = try runProcess("/usr/bin/unzip", arguments: ["-q", "-o", filePath, "-d", tempDir])
@@ -101,7 +106,8 @@ enum PPTXReader {
     // Parse each slide
     for rId in slideOrder {
       guard let slideInfo = slideRIdMap.first(where: { $0.rId == rId }) else { continue }
-      let slidePath = "\(tempDir)/ppt/\(slideInfo.target)"
+      let slidePath = try resolveRelationshipTarget(
+        slideInfo.target, baseDir: "\(tempDir)/ppt", packageRoot: tempDir)
 
       guard FileManager.default.fileExists(atPath: slidePath) else { continue }
 
@@ -110,6 +116,27 @@ enum PPTXReader {
     }
 
     return presentation
+  }
+
+  // MARK: - Relationship Target Resolution
+
+  /// Resolve an OOXML relationship target against its base part directory and
+  /// prove the result stays inside the extraction root before filesystem use.
+  static func resolveRelationshipTarget(
+    _ target: String, baseDir: String, packageRoot: String
+  ) throws -> String {
+    let combined: String
+    if target.hasPrefix("/") {
+      // Package-absolute target, resolved from the package root.
+      combined = packageRoot + target
+    } else {
+      combined = "\(baseDir)/\(target)"
+    }
+    let resolved = PathSafety.canonicalize(combined)
+    guard PathSafety.isContained(resolved, in: packageRoot) else {
+      throw PPTXError.invalidFile("Relationship target escapes package: \(target)")
+    }
+    return resolved
   }
 
   // MARK: - Slide Parsing
